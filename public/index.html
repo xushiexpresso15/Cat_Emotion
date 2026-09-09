@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cat Emotion Monitor</title>
+    <style>
+        :root {
+            --bg-color: #080808;
+            --panel-bg: rgba(255, 255, 255, 0.025);
+            --border: rgba(255, 255, 255, 0.08);
+            --text-primary: #ffffff;
+            --text-muted: #888888;
+            --c-angry: #ff4d4d;
+            --c-focus: #4da6ff;
+            --c-relax: #4dff88;
+            --c-scared: #ffb84d;
+            --c-unknown: #888888;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* --- Main Screen --- */
+        #main-screen {
+            flex: 1 1 auto;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            min-width: 0;
+            padding: 24px;
+        }
+
+        .video-container {
+            width: 100%;
+            max-width: 860px;
+            aspect-ratio: 4/3;
+            max-height: 85vh;
+            border-radius: 16px;
+            border: 2px solid var(--border);
+            position: relative;
+            transition: border-color 0.4s ease, box-shadow 0.4s ease;
+            overflow: hidden;
+            background: #000;
+        }
+
+        #video-stream {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+
+        #bbox-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .status-indicator {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.55);
+            padding: 5px 10px;
+            border-radius: 20px;
+            backdrop-filter: blur(4px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ff4d4d;
+            box-shadow: 0 0 8px #ff4d4d;
+        }
+        .status-dot.connected {
+            background: #4dff88;
+            box-shadow: 0 0 8px #4dff88;
+        }
+
+        #fps-display {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        /* --- Log Panel --- */
+        #log-panel {
+            width: 320px;
+            height: 100vh;
+            flex: 0 0 320px;
+            background: var(--panel-bg);
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .log-header {
+            padding: 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .log-header-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .icon-btn {
+            background: none;
+            border: none;
+            padding: 4px;
+            cursor: pointer;
+            fill: var(--text-muted);
+            color: var(--text-muted);
+            transition: fill 0.2s, color 0.2s;
+            display: flex;
+            align-items: center;
+        }
+        .icon-btn:hover { fill: var(--text-primary); color: var(--text-primary); }
+
+        .log-summary {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            padding: 14px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-muted);
+            font-size: 11px;
+        }
+        .log-summary strong {
+            display: block;
+            color: var(--text-primary);
+            font-size: 13px;
+            font-weight: 600;
+            margin-top: 3px;
+        }
+        .log-summary .full-width {
+            grid-column: 1 / -1;
+        }
+
+        .log-content {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 12px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 11px;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .log-entry {
+            display: grid;
+            grid-template-columns: 6px 1fr;
+            gap: 8px;
+            align-items: flex-start;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            background: rgba(255, 255, 255, 0.015);
+        }
+        .log-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            margin-top: 4px;
+            flex-shrink: 0;
+        }
+        .log-meta {
+            display: flex;
+            justify-content: space-between;
+            color: var(--text-muted);
+            font-size: 10px;
+            margin-bottom: 3px;
+        }
+        .log-msg {
+            color: var(--text-primary);
+            word-break: break-all;
+            line-height: 1.3;
+        }
+        .log-raw {
+            color: var(--text-muted);
+            font-size: 10px;
+            margin-top: 3px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            word-break: break-all;
+        }
+
+        /* Modal for QR Code */
+        .modal-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(8px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .modal-card {
+            background: #161b22;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 16px;
+            padding: 24px;
+            max-width: 340px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+        }
+
+        .modal-card img {
+            width: 220px;
+            height: 220px;
+            border-radius: 10px;
+            margin: 16px auto;
+            display: block;
+            background: white;
+            padding: 8px;
+        }
+
+        .modal-card p {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+            word-break: break-all;
+        }
+
+        .modal-close-btn {
+            background: #238636;
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+        }
+
+        @media (max-width: 900px) {
+            body { display: block; overflow: auto; }
+            #main-screen { min-height: 55vh; padding: 12px; }
+            .video-container { width: 100%; max-height: 50vh; }
+            #log-panel {
+                width: 100%;
+                height: 45vh;
+                min-height: 260px;
+                border-left: none;
+                border-top: 1px solid var(--border);
+                flex: none;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="main-screen">
+        <div class="video-container" id="video-wrap">
+            <img id="video-stream" alt="Cat Emotion Stream">
+            <canvas id="bbox-canvas"></canvas>
+            <div class="status-indicator">
+                <span id="fps-display">0 fps</span>
+                <div class="status-dot" id="conn-dot"></div>
+            </div>
+        </div>
+    </div>
+
+    <aside id="log-panel">
+        <div class="log-header">
+            <span>System Log</span>
+            <div class="log-header-actions">
+                <button class="icon-btn" onclick="openQrModal()" title="Share QR Code">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm13-2h3v2h-3v-2zm-5 0h2v2h-2v-2zm2 2h2v2h-2v-2zm2 2h3v2h-3v-2zm-4 0h2v2h-2v-2zm2 2h2v2h-2v-2z"/>
+                    </svg>
+                </button>
+                <button class="icon-btn" onclick="clearLogs()" title="Clear logs">
+                    <svg width="15" height="15" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                </button>
+            </div>
+        </div>
+        <div class="log-summary">
+            <div>Connection<strong id="log-connection">Connecting...</strong></div>
+            <div>Inference FPS<strong id="log-fps">0 fps</strong></div>
+            <div>Current Emotion<strong id="log-emotion">Searching...</strong></div>
+            <div>Confidence<strong id="log-conf">--</strong></div>
+            <div class="full-width">Raw Model Output<strong id="log-raw" style="font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted); word-break: break-all;">[]</strong></div>
+        </div>
+        <div class="log-content" id="log-content"></div>
+    </aside>
+
+    <!-- QR Code Modal -->
+    <div class="modal-backdrop" id="qr-modal" onclick="closeQrModal(event)">
+        <div class="modal-card" onclick="event.stopPropagation()">
+            <h3 style="margin-bottom: 8px;">📱 掃描 QR Code 觀看</h3>
+            <img id="qr-img" src="" alt="QR Code">
+            <p id="qr-url"></p>
+            <button class="modal-close-btn" onclick="closeQrModal()">關閉</button>
+        </div>
+    </div>
+
+    <script>
+        const EMOTION_MAP = {
+            angry:  { name: 'Angry',  color: 'var(--c-angry)' },
+            focus:  { name: 'Focus',  color: 'var(--c-focus)' },
+            relax:  { name: 'Relax',  color: 'var(--c-relax)' },
+            scared: { name: 'Scared', color: 'var(--c-scared)' },
+            unknown:{ name: 'Searching', color: 'var(--c-unknown)' }
+        };
+
+        const canvas = document.getElementById('bbox-canvas');
+        const ctx = canvas.getContext('2d');
+        const videoStream = document.getElementById('video-stream');
+        const videoWrap = document.getElementById('video-wrap');
+        const connDot = document.getElementById('conn-dot');
+        const fpsDisplay = document.getElementById('fps-display');
+        const logFps = document.getElementById('log-fps');
+        const logConn = document.getElementById('log-connection');
+        const logEmotion = document.getElementById('log-emotion');
+        const logConf = document.getElementById('log-conf');
+        const logRaw = document.getElementById('log-raw');
+        const logContent = document.getElementById('log-content');
+
+        function resizeCanvas() {
+            if (videoWrap) {
+                const w = videoWrap.clientWidth;
+                const h = videoWrap.clientHeight;
+                if (canvas.width !== w || canvas.height !== h) {
+                    canvas.width = w;
+                    canvas.height = h;
+                }
+            }
+        }
+        window.addEventListener('resize', resizeCanvas);
+        videoStream.addEventListener('load', resizeCanvas);
+        resizeCanvas();
+
+        let currentBlobUrl = null;
+        let receivedWsFrame = false;
+
+        let ws = null;
+        let reconnectDelay = 1000;
+        let framesCount = 0;
+        let lastFpsTime = performance.now();
+        let lastBoxTime = 0;
+        let lastLoggedEmotion = null;
+        let lastLogTime = 0;
+        let noFrameWarnTimer = null;
+
+        function connectWebSocket() {
+            // Auto-detect whether we are on local ESP32 or Cloud Relay
+            const isLocalEsp32 = (window.location.port === '' || window.location.port === '80') &&
+                                 (window.location.hostname === 'cat.local' || window.location.hostname.startsWith('192.168.') || window.location.hostname.startsWith('10.'));
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            let wsUrl;
+            if (isLocalEsp32) {
+                wsUrl = `${wsProtocol}//${window.location.hostname}:81/`;
+            } else {
+                wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+            }
+
+            console.log(`[WebSocket] Initiating connection to: ${wsUrl}`);
+            addSystemLog(`Connecting to WebSocket: ${wsUrl}`, 'info');
+
+            try {
+                ws = new WebSocket(wsUrl);
+            } catch (e) {
+                console.error("[WebSocket Init Error]", e);
+                addSystemLog(`WS Init Exception: ${e.message}`, 'error');
+                setTimeout(connectWebSocket, 2000);
+                return;
+            }
+
+            ws.onopen = () => {
+                console.log(`[WebSocket] Connection established successfully on ${wsUrl}`);
+                connDot.classList.add('connected');
+                logConn.textContent = receivedWsFrame ? 'Streaming' : 'Waiting for Camera...';
+                addSystemLog(`WebSocket connected (${wsUrl})`, 'ok');
+                reconnectDelay = 1000;
+
+                if (!receivedWsFrame) {
+                    if (noFrameWarnTimer) clearTimeout(noFrameWarnTimer);
+                    noFrameWarnTimer = setTimeout(() => {
+                        if (!receivedWsFrame) {
+                            addSystemLog("Waiting for first video frame from ESP32...", "warn");
+                        }
+                    }, 3500);
+                }
+            };
+
+            ws.onclose = (event) => {
+                connDot.classList.remove('connected');
+                logConn.textContent = 'Disconnected';
+                addSystemLog(`WebSocket disconnected (Code ${event.code}). Retrying in ${(reconnectDelay/1000).toFixed(1)}s...`, 'warn');
+                if (noFrameWarnTimer) clearTimeout(noFrameWarnTimer);
+                setTimeout(connectWebSocket, reconnectDelay);
+                reconnectDelay = Math.min(reconnectDelay * 1.5, 4000);
+            };
+
+            ws.onerror = (err) => {
+                addSystemLog(`WebSocket error event triggered`, 'error');
+            };
+
+            ws.onmessage = (event) => {
+                const now = performance.now();
+
+                // 1. Binary message: Real-time JPEG frame
+                if (event.data instanceof Blob) {
+                    if (!receivedWsFrame) {
+                        receivedWsFrame = true;
+                        logConn.textContent = 'Streaming';
+                        addSystemLog(`Camera stream active! (${event.data.size} bytes/frame)`, 'ok');
+                        if (noFrameWarnTimer) clearTimeout(noFrameWarnTimer);
+                    }
+                    framesCount++;
+                    if (now - lastFpsTime >= 1000) {
+                        const elapsed = (now - lastFpsTime) / 1000;
+                        const fps = Math.round(framesCount / elapsed);
+                        fpsDisplay.innerText = fps + ' fps';
+                        logFps.textContent = fps + ' fps';
+                        framesCount = 0;
+                        lastFpsTime = now;
+                    }
+
+                    const url = URL.createObjectURL(event.data);
+                    const prevUrl = currentBlobUrl;
+                    currentBlobUrl = url;
+                    videoStream.src = url;
+                    if (prevUrl) {
+                        setTimeout(() => URL.revokeObjectURL(prevUrl), 1000);
+                    }
+                    return;
+                }
+
+                // 2. Text message: JSON inference metadata or diagnostics
+                try {
+                    const data = JSON.parse(event.data);
+
+                    if (data.type === 'status') {
+                        if (data.esp32_online) {
+                            addSystemLog("ESP32 Camera is Online and streaming", "ok");
+                        } else {
+                            addSystemLog("ESP32 Camera is Offline", "warn");
+                        }
+                        return;
+                    }
+
+                    if (data.type === 'diag') {
+                        return;
+                    }
+
+                    const rawStr = JSON.stringify(data.raw || []);
+                    if (logRaw) logRaw.textContent = rawStr;
+
+                    if (data.bbox && data.emotion && data.emotion !== 'none') {
+                        lastBoxTime = now;
+                        drawBox(data.bbox, data.emotion, data.confidence);
+                        updateEmotionUI(data.emotion, data.confidence);
+                        addLog(data.emotion, data.confidence, data.raw);
+                    } else {
+                        if (now - lastBoxTime > 600) {
+                            ctx.clearRect(0, 0, canvas.width, canvas.height);
+                            videoWrap.style.borderColor = 'var(--border)';
+                            videoWrap.style.boxShadow = 'none';
+                            logEmotion.textContent = 'Searching...';
+                            logEmotion.style.color = 'var(--text-primary)';
+                            logConf.textContent = '--';
+                            if (logRaw) {
+                                logRaw.textContent = '[]';
+                                logRaw.style.color = 'var(--text-muted)';
+                            }
+                            addLog('none', 0, []);
+                        }
+                    }
+                } catch (e) {
+                    console.error("[JSON Parse Error]", e);
+                }
+            };
+        }
+
+        function addSystemLog(text, level = 'info') {
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+            const colors = {
+                info: 'var(--c-focus)',
+                ok: 'var(--c-relax)',
+                warn: 'var(--c-scared)',
+                error: 'var(--c-angry)'
+            };
+            const color = colors[level] || colors.info;
+            const item = document.createElement('div');
+            item.className = 'log-entry';
+            item.innerHTML = `
+                <div class="log-dot" style="background: ${color}"></div>
+                <div style="flex: 1; min-width: 0;">
+                    <div class="log-meta">
+                        <span style="color: ${color}; font-weight: 600;">[SYS ${level.toUpperCase()}]</span>
+                        <span>${time}</span>
+                    </div>
+                    <div class="log-msg" style="color: ${color}; font-size: 11px;">${text}</div>
+                </div>
+            `;
+            logContent.prepend(item);
+            while (logContent.children.length > 50) {
+                logContent.removeChild(logContent.lastChild);
+            }
+        }
+
+        function getColor(colorVar) {
+            const m = colorVar.match(/var\((.*?)\)/);
+            return m ? getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim() : '#4dff88';
+        }
+
+        function drawBox(bbox, emotion, confidence) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!bbox) return;
+
+            const em = EMOTION_MAP[emotion] || EMOTION_MAP.unknown;
+            const color = getColor(em.color);
+
+            const natW = videoStream.naturalWidth || 320;
+            const natH = videoStream.naturalHeight || 240;
+            const scaleX = canvas.width / natW;
+            const scaleY = canvas.height / natH;
+
+            const x = bbox.x * scaleX;
+            const y = bbox.y * scaleY;
+            const w = bbox.w * scaleX;
+            const h = bbox.h * scaleY;
+
+            ctx.save();
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 10;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x, y, w, h);
+            ctx.restore();
+
+            const pct = Math.round((confidence || 0) * 100);
+            const label = `${em.name.toUpperCase()} ${pct}%`;
+            ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            const metrics = ctx.measureText(label);
+            const badgeW = metrics.width + 14;
+            const badgeH = 24;
+            const badgeY = y >= badgeH + 4 ? y - badgeH - 2 : y + 2;
+
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.roundRect(x, badgeY, badgeW, badgeH, 4);
+            ctx.fill();
+
+            ctx.fillStyle = '#000000';
+            ctx.fillText(label, x + 7, badgeY + 16);
+        }
+
+        function updateEmotionUI(emotion, confidence) {
+            const em = EMOTION_MAP[emotion] || EMOTION_MAP.unknown;
+            const color = getColor(em.color);
+            videoWrap.style.borderColor = color;
+            videoWrap.style.boxShadow = `0 0 30px ${color}33`;
+
+            const pct = Math.round((confidence || 0) * 100);
+            logEmotion.textContent = em.name;
+            logEmotion.style.color = color;
+            logConf.textContent = pct + '%';
+            if (logRaw) logRaw.style.color = color;
+        }
+
+        function addLog(emotion, confidence, raw) {
+            const now = Date.now();
+            const isDetect = emotion && emotion !== 'none' && emotion !== 'unknown';
+
+            if (isDetect && emotion === lastLoggedEmotion && (now - lastLogTime < 1500)) {
+                return;
+            }
+            if (!isDetect) {
+                if (lastLoggedEmotion === 'none') return;
+                lastLoggedEmotion = 'none';
+            } else {
+                lastLoggedEmotion = emotion;
+            }
+            lastLogTime = now;
+
+            const em = EMOTION_MAP[emotion] || EMOTION_MAP.unknown;
+            const color = isDetect ? getColor(em.color) : 'var(--text-muted)';
+            const pct = isDetect ? Math.round((confidence || 0) * 100) : 0;
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+            const rawStr = JSON.stringify(raw || []);
+
+            const item = document.createElement('div');
+            item.className = 'log-entry';
+            item.innerHTML = `
+                <div class="log-dot" style="background: ${color}"></div>
+                <div style="flex: 1; min-width: 0;">
+                    <div class="log-meta">
+                        <span style="color: ${color}; font-weight: 600;">${isDetect ? em.name.toUpperCase() : 'NO TARGET'}</span>
+                        <span>${time}</span>
+                    </div>
+                    <div class="log-msg">${isDetect ? `Confidence: ${pct}%` : 'No detection'}</div>
+                    <div class="log-raw" style="color: var(--text-muted); font-size: 10px; margin-top: 3px; font-family: ui-monospace, monospace; word-break: break-all;">Raw: ${rawStr}</div>
+                </div>
+            `;
+            logContent.prepend(item);
+
+            while (logContent.children.length > 50) {
+                logContent.removeChild(logContent.lastChild);
+            }
+        }
+
+        function clearLogs() {
+            logContent.innerHTML = '';
+        }
+
+        function openQrModal() {
+            const curUrl = window.location.href;
+            document.getElementById('qr-url').textContent = curUrl;
+            document.getElementById('qr-img').src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(curUrl)}`;
+            document.getElementById('qr-modal').style.display = 'flex';
+        }
+
+        function closeQrModal() {
+            document.getElementById('qr-modal').style.display = 'none';
+        }
+
+        connectWebSocket();
+    </script>
+</body>
+</html>
