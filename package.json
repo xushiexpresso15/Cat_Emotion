@@ -1,15 +1,14 @@
 {
-  "name": "cloud_relay",
+  "name": "cat-emotion-cloud-relay",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "High-throughput WebSocket and MJPEG relay server for the Cat Emotion edge camera system",
+  "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js"
   },
-  "keywords": [],
+  "keywords": ["edge-ai", "esp32", "mjpeg", "websocket", "streaming", "cat-emotion"],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "cors": "^2.8.6",
