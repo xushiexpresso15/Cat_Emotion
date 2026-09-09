@@ -68,9 +68,9 @@ Credentials and environment parameters are separated into a dedicated configurat
 ### 1. Create Your Local `secrets.h`
 Copy the provided template:
 ```bash
-cp secrets.example.h secrets.h
+cp cat_emotion_camera_server/secrets.example.h cat_emotion_camera_server/secrets.h
 ```
-Edit `secrets.h` with your Wi-Fi credentials and cloud relay token:
+Edit `cat_emotion_camera_server/secrets.h` with your Wi-Fi credentials and cloud relay token:
 ```cpp
 // Station networks (tried in order)
 const KnownNetwork known_networks[] = {
@@ -83,8 +83,8 @@ const char* ap_ssid     = "Cat_Emotion_AP";
 const char* ap_password = "password123";
 
 // Cloud Relay settings
-const bool     cloud_relay_enabled = false;
-const char*    cloud_relay_host    = "your-relay-service.onrender.com";
+const bool     cloud_relay_enabled = true;
+const char*    cloud_relay_host    = "cat-emo-live.onrender.com";
 const uint16_t cloud_relay_port    = 443;
 const char*    cloud_relay_path    = "/esp32";
 const bool     cloud_relay_ssl     = true;
@@ -92,7 +92,17 @@ const bool     cloud_relay_ssl     = true;
 // Pre-shared authentication token (matches STREAM_SECRET on the relay)
 const char*    cloud_relay_token   = "your_stream_secret_here";
 ```
-`secrets.h` is excluded in `.gitignore` and will never be uploaded to GitHub. If `secrets.h` is not present, the firmware falls back safely to `secrets.example.h`.
+`cat_emotion_camera_server/secrets.h` is excluded in `.gitignore` and will never be uploaded to GitHub. If `secrets.h` is not present, the firmware falls back safely to `secrets.example.h`.
+
+---
+
+## Dynamic Session Security PIN
+
+Every time the ESP32 boots up, a cryptographically secure 6-digit hardware-random PIN is generated:
+- The ESP32 registers the PIN with the cloud relay when establishing the outbound WebSocket tunnel.
+- Visitors to the public stream must enter the PIN to unlock video streaming and telemetry.
+- The PIN is printed over the USB Serial Monitor (115200 baud).
+- Authorized local users connected to the ESP32's SoftAP (`192.168.4.1`) can view the current PIN at `http://192.168.4.1/status` or query `http://192.168.4.1/pin`.
 
 ---
 
@@ -101,7 +111,7 @@ const char*    cloud_relay_token   = "your_stream_secret_here";
 ### Prerequisites
 
 1. Install [Arduino CLI](https://arduino.github.io/arduino-cli/) or Arduino IDE (v2.x).
-2. Install the ESP32 Board Support Package (version 2.0.14 or 3.0+):
+2. Install the ESP32 Board Support Package (version 3.0+ recommended):
    ```bash
    arduino-cli core update-index
    arduino-cli core install esp32:esp32
@@ -112,18 +122,18 @@ const char*    cloud_relay_token   = "your_stream_secret_here";
 
 ### Compilation via Arduino CLI (Recommended)
 
-> **Important**: The XIAO ESP32-S3 requires Octal PSRAM (`PSRAM=opi`) and a partition scheme large enough for the firmware image (`Huge APP`).
+> **Important**: The XIAO ESP32-S3 requires Octal PSRAM (`PSRAM=opi`). In BSP v3+, the default partition scheme is 8MB (3MB APP / 1.5MB SPIFFS).
 
 ```bash
 # Clone the firmware branch
 git clone -b esp32-firmware https://github.com/xushiexpresso15/Cat_Emotion.git esp32-gateway
 cd esp32-gateway
 
-# Compile with OPI PSRAM enabled
-arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=huge_app .
+# Compile sketch
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi cat_emotion_camera_server
 
 # Upload to the device (replace /dev/ttyACM0 with your board port)
-arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=huge_app .
+arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi cat_emotion_camera_server
 ```
 
 ### Arduino IDE Configuration
