@@ -4,6 +4,32 @@ This branch contains the neural network models, Arm Ethos-U55 NPU compilation ar
 
 ---
 
+## Prerequisites & Runtime Environment
+
+### Supported Operating Systems
+- **Linux (Recommended)**: Ubuntu 20.04 / 22.04 LTS x86_64, Debian 11 / 12, or compatible Linux distributions.
+- **Windows / macOS**: Windows 10 / 11 with WSL2 (Ubuntu 22.04 LTS recommended), or macOS 12+ for flashing utilities.
+
+### Python Environment & Compilers
+- **Python Version**: Python 3.10 or 3.11 (Python 3.10 recommended; Python 3.12 is not yet supported by certain TensorFlow/Vela dependencies).
+- **Core Python Machine Learning Packages**:
+  - `ethos-u-vela` (>=3.9.0) - Arm Ethos-U microNPU offline model compiler and memory optimizer.
+  - `tensorflow` (>=2.13.0, <=2.15.0) - TFLite INT8 model generation and quantization calibration.
+  - `ultralytics` (>=8.0.0) - YOLO model training and PyTorch-to-ONNX pipeline.
+
+### Flashing Tools & Serial Drivers
+- **Python Serial Packages**:
+  - `pyserial>=3.5`
+  - `xmodem>=0.4.6` (for transferring binary firmware images over UART bootloader)
+- **Linux Serial Port Permissions**:
+  Ensure your user account has access to `/dev/ttyACM*` or `/dev/ttyUSB*`:
+  ```bash
+  sudo usermod -a -G dialout $USER
+  # Log out and log back in for permissions to take effect
+  ```
+
+---
+
 ## Architectural Highlights
 
 Deploying complex vision models on embedded microcontrollers requires careful co-design of neural architecture, quantization schemes, and hardware memory hierarchies.
