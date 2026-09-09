@@ -63,9 +63,14 @@ The ESP32-S3 serves as the network gateway and telemetry distributor for the ent
 
 ## Configuration
 
-All network credentials and cloud parameters are configured at the top of `cat_emotion_camera_server.ino`:
+Credentials and environment parameters are separated into a dedicated configuration file to keep sensitive data out of Git tracking.
 
-### 1. Wi-Fi Settings
+### 1. Create Your Local `secrets.h`
+Copy the provided template:
+```bash
+cp secrets.example.h secrets.h
+```
+Edit `secrets.h` with your Wi-Fi credentials and cloud relay token:
 ```cpp
 // Station networks (tried in order)
 const KnownNetwork known_networks[] = {
@@ -76,17 +81,18 @@ const KnownNetwork known_networks[] = {
 // SoftAP settings (direct connection)
 const char* ap_ssid     = "Cat_Emotion_AP";
 const char* ap_password = "password123";
-```
 
-### 2. Cloud Relay Settings
-```cpp
-// Set to true to enable outbound streaming to your cloud relay
-const bool cloud_relay_enabled  = true;
-const char* cloud_relay_host    = "your-relay-service.onrender.com";
-const uint16_t cloud_relay_port = 443;
-const char* cloud_relay_path    = "/esp32";
-const bool cloud_relay_ssl      = true;
+// Cloud Relay settings
+const bool     cloud_relay_enabled = false;
+const char*    cloud_relay_host    = "your-relay-service.onrender.com";
+const uint16_t cloud_relay_port    = 443;
+const char*    cloud_relay_path    = "/esp32";
+const bool     cloud_relay_ssl     = true;
+
+// Pre-shared authentication token (matches STREAM_SECRET on the relay)
+const char*    cloud_relay_token   = "your_stream_secret_here";
 ```
+`secrets.h` is excluded in `.gitignore` and will never be uploaded to GitHub. If `secrets.h` is not present, the firmware falls back safely to `secrets.example.h`.
 
 ---
 

@@ -6,34 +6,15 @@
 #include "app_httpd.h"
 
 // ===========================
-// WiFi Configuration (AP + STA Concurrent Dual-Mode)
+// Configuration & Credentials
 // ===========================
-struct KnownNetwork {
-    const char* ssid;
-    const char* password;
-};
-
-// List of known Station networks (tried in order)
-// Replace with your local Wi-Fi SSID and password
-const KnownNetwork known_networks[] = {
-    {"YOUR_HOTSPOT_SSID", "YOUR_HOTSPOT_PASSWORD"},  // Primary (Mobile hotspot / field test)
-    {"YOUR_WIFI_SSID",    "YOUR_WIFI_PASSWORD"}      // Secondary (Home / lab router)
-};
-const size_t NUM_KNOWN_NETWORKS = sizeof(known_networks) / sizeof(known_networks[0]);
-
-// Standalone SoftAP configuration (direct connection at http://192.168.4.1)
-const char* ap_ssid     = "Cat_Emotion_AP";
-const char* ap_password = "password123";
-
-// ===========================
-// Cloud Relay Streaming Configuration
-// ===========================
-// Set cloud_relay_enabled to true when streaming to a public relay (e.g., Render, Railway, VPS)
-const bool cloud_relay_enabled  = false;
-const char* cloud_relay_host    = "your-relay-service.onrender.com";
-const uint16_t cloud_relay_port = 443;
-const char* cloud_relay_path    = "/esp32";
-const bool cloud_relay_ssl      = true;
+// Copy secrets.example.h to secrets.h and fill in your real Wi-Fi credentials and token.
+// secrets.h is gitignored and will never be committed to GitHub.
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#include "secrets.example.h"
+#endif
 
 DNSServer dnsServer;
 
@@ -44,6 +25,21 @@ void startRemoteProxy(Proto);
 void startCameraServer();
 
 void loopRemoteProxy();
+
+static String s_full_cloud_path;
+void connectToCloudRelay() {
+    if (!cloud_relay_enabled) return;
+    static bool s_cloud_started = false;
+    if (s_cloud_started) return;
+    s_cloud_started = true;
+
+    s_full_cloud_path = String(cloud_relay_path);
+    if (cloud_relay_token && strlen(cloud_relay_token) > 0) {
+        s_full_cloud_path += "?token=";
+        s_full_cloud_path += cloud_relay_token;
+    }
+    initCloudRelay(cloud_relay_host, cloud_relay_port, s_full_cloud_path.c_str(), cloud_relay_ssl);
+}
 
 void setup() {
     initSharedBuffer();
@@ -72,11 +68,7 @@ void setup() {
         } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
             Serial.printf("[WiFi STA] 成功取得 IP: %s\n", WiFi.localIP().toString().c_str());
             MDNS.begin("cat");
-            static bool s_cloud_started = false;
-            if (cloud_relay_enabled && !s_cloud_started) {
-                s_cloud_started = true;
-                initCloudRelay(cloud_relay_host, cloud_relay_port, cloud_relay_path, cloud_relay_ssl);
-            }
+            connectToCloudRelay();
         } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
             Serial.println("[WiFi STA] 外部 Wi-Fi 已中斷連線");
         }
@@ -131,7 +123,7 @@ void setup() {
     startCameraServer();
 
     if (cloud_relay_enabled && sta_connected) {
-        initCloudRelay(cloud_relay_host, cloud_relay_port, cloud_relay_path, cloud_relay_ssl);
+        connectToCloudRelay();
     }
 
     Serial.println("\n=========================================");

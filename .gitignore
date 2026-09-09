@@ -1,0 +1,12 @@
+# Secrets and Credentials
+secrets.h
+
+# Arduino / PlatformIO Build Artifacts
+build/
+*.bin
+*.elf
+*.hex
+
+# Local OS Files
+.DS_Store
+Thumbs.db

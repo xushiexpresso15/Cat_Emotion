@@ -144,7 +144,7 @@ void initCloudRelay(const char* host, uint16_t port, const char* path, bool ssl)
     cloudClient.enableHeartbeat(15000, 3000, 2);
     cloudClient.onEvent([](WStype_t type, uint8_t * payload, size_t length) {
         if (type == WStype_CONNECTED) {
-            Serial.println("[Cloud WS] ★ 雲端中繼站連線成功！開始即時推流");
+            Serial.println("[Cloud WS] [OK] 雲端中繼站連線成功！開始即時推流");
         } else if (type == WStype_DISCONNECTED) {
             Serial.println("[Cloud WS] 與雲端中繼站中斷連線 (5秒後自動重試)");
         } else if (type == WStype_ERROR) {
