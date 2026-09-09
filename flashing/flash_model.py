@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-One-Click Dedicated Flasher for YOLOv8n Cat Emotion V4 (Calibrated QAT).
-Hermetic: All paths are self-contained relative to this script.
-Target:
-  - Firmware: firmware/output.img -> 0x00000000
-  - Model:    model/cat_emotion_v4_calibrated_qat_vela.tflite -> 0x00B7B000
+Dedicated Flasher for Himax Grove Vision AI V2 (HX6538 / Ethos-U55 NPU).
+Hermetic: All paths are resolved relative to the repository root.
+Targets:
+  - Firmware image: firmware/output.img -> Flash address 0x00000000
+  - Vela NPU model: model/cat_emotion_v4_calibrated_qat_vela.tflite -> Flash address 0x00B7B000
 """
 
 import io
@@ -18,9 +18,10 @@ import serial
 from xmodem import XMODEM
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
-FW_PATH = BASE_DIR / "firmware" / "output.img"
-MODEL_PATH = BASE_DIR / "model" / "cat_emotion_v4_calibrated_qat_vela.tflite"
+# Repo root is one level up from this script
+REPO_ROOT = Path(__file__).resolve().parent.parent
+FW_PATH = REPO_ROOT / "firmware" / "output.img"
+MODEL_PATH = REPO_ROOT / "model" / "cat_emotion_v4_calibrated_qat_vela.tflite"
 MODEL_ADDR = 0x00B7B000
 DEFAULT_PORT = "/dev/ttyACM0"
 DEFAULT_BAUD = 921600
@@ -32,7 +33,7 @@ def progress_callback(total_packets, success_count, error_count):
     if send_bin_total_packets > 0:
         pct = min(100.0, (total_packets / send_bin_total_packets) * 100.0)
         bar = int(pct / 100.0 * 30)
-        print(f"\r[{'█'*bar}{' '*(30-bar)}] {pct:5.1f}% ({total_packets}/{send_bin_total_packets}) err:{error_count}", end="", flush=True)
+        print(f"\r[{'='*bar}{' '*(30-bar)}] {pct:5.1f}% ({total_packets}/{send_bin_total_packets}) err:{error_count}", end="", flush=True)
         if pct >= 100.0:
             print()
 
@@ -44,7 +45,7 @@ def wait_for_prompt(ser, prompt_substr, timeout=10.0):
         line = ser.readline().decode('utf-8', errors='ignore')
         if line:
             buf += line
-            print("  [BL]:", line.strip())
+            print("  [BOOTLOADER]:", line.strip())
             if prompt_substr in buf:
                 return True
     return False
@@ -52,17 +53,17 @@ def wait_for_prompt(ser, prompt_substr, timeout=10.0):
 def flash(port=DEFAULT_PORT, baudrate=DEFAULT_BAUD):
     global send_bin_total_packets
     if not FW_PATH.exists():
-        print(f"❌ Error: Firmware file not found: {FW_PATH}")
+        print(f"[ERROR] Firmware image not found: {FW_PATH}")
         return False
     if not MODEL_PATH.exists():
-        print(f"❌ Error: Model file not found: {MODEL_PATH}")
+        print(f"[ERROR] Model file not found: {MODEL_PATH}")
         return False
 
     fw_size = FW_PATH.stat().st_size
     model_size = MODEL_PATH.stat().st_size
 
     print("==================================================================")
-    print(" 🚀 Grove Vision AI V2 - Flashing YOLOv8n V4 Calibrated QAT Model")
+    print(" Grove Vision AI V2 - Flashing Firmware and Vela NPU Model")
     print(f" Port:        {port} @ {baudrate}")
     print(f" Firmware:    {FW_PATH.name} ({fw_size/1024:.1f} KB)")
     print(f" Model:       {MODEL_PATH.name} ({model_size/1024/1024:.2f} MB)")
@@ -72,7 +73,7 @@ def flash(port=DEFAULT_PORT, baudrate=DEFAULT_BAUD):
     try:
         ser = serial.Serial(port, baudrate, timeout=0.1)
     except Exception as e:
-        print(f"❌ Error opening port {port}: {e}")
+        print(f"[ERROR] Unable to open serial port {port}: {e}")
         return False
 
     print("\n[1/5] Resetting board into bootloader mode...")
@@ -123,10 +124,10 @@ def flash(port=DEFAULT_PORT, baudrate=DEFAULT_BAUD):
         ret = modem.send(f, callback=progress_callback)
 
     if not ret:
-        print("\n❌ Failed to flash firmware!")
+        print("\n[ERROR] Failed to flash firmware image!")
         ser.close()
         return False
-    print("\n✅ Firmware flashed successfully!")
+    print("\n[OK] Firmware image flashed successfully.")
 
     wait_for_prompt(ser, "Do you want to end file transmission and reboot system", timeout=10.0)
     time.sleep(0.5)
@@ -134,16 +135,16 @@ def flash(port=DEFAULT_PORT, baudrate=DEFAULT_BAUD):
     ser.write(b'n\r\n')
     time.sleep(0.5)
 
-    print(f"\n[3/5] Setting Model Flash Address to 0x{MODEL_ADDR:06X}...")
+    print(f"\n[3/5] Configuring Model Flash Address to 0x{MODEL_ADDR:06X}...")
     header = bytearray([0xC0, 0x5A] + list(MODEL_ADDR.to_bytes(4, 'little')) + list((0).to_bytes(4, 'little')) + [0x5A, 0xC0] + [0xFF] * (128 - 12))
     send_bin_total_packets = 1
     ser.flushInput()
     ret = modem.send(io.BytesIO(header), callback=progress_callback)
     if not ret:
-        print("\n❌ Failed to send model preamble!")
+        print("\n[ERROR] Failed to send model preamble header!")
         ser.close()
         return False
-    print("\n✅ Flash offset configured!")
+    print("\n[OK] Flash offset configured successfully.")
 
     wait_for_prompt(ser, "Do you want to end file transmission and reboot system", timeout=10.0)
     time.sleep(0.5)
@@ -151,23 +152,23 @@ def flash(port=DEFAULT_PORT, baudrate=DEFAULT_BAUD):
     ser.write(b'n\r\n')
     time.sleep(0.5)
 
-    print(f"\n[4/5] Flashing Vela Model {MODEL_PATH.name} ({model_size} bytes)...")
+    print(f"\n[4/5] Flashing Vela NPU Model {MODEL_PATH.name} ({model_size} bytes)...")
     send_bin_total_packets = math.ceil(model_size / 128)
     ser.flushInput()
     with open(MODEL_PATH, "rb") as f:
         ret = modem.send(f, callback=progress_callback)
 
     if not ret:
-        print("\n❌ Failed to flash model!")
+        print("\n[ERROR] Failed to flash model file!")
         ser.close()
         return False
-    print("\n✅ Model flashed successfully!")
+    print("\n[OK] Model flashed successfully.")
 
     print("\n[5/5] Instructing board to reboot...")
     wait_for_prompt(ser, "Do you want to end file transmission and reboot system", timeout=10.0)
     time.sleep(0.2)
     ser.write(b'y\r\n')
-    print("✅ Reboot command sent!")
+    print("[OK] Reboot command sent.")
 
     print("\n--- Board Startup Output (4s) ---")
     ser.timeout = 0.5
@@ -178,11 +179,11 @@ def flash(port=DEFAULT_PORT, baudrate=DEFAULT_BAUD):
             print("  ", line.strip())
 
     ser.close()
-    print("\n🎉 V4 Model successfully flashed and running on Grove Vision AI V2!")
+    print("\n[SUCCESS] Model and firmware successfully flashed to Grove Vision AI V2.")
     return True
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="One-click flasher for YOLOv8n V4 Calibrated QAT on Grove Vision AI V2")
+    parser = argparse.ArgumentParser(description="Dedicated flasher for Grove Vision AI V2 (HX6538 / Ethos-U55 NPU)")
     parser.add_argument("port", nargs="?", default=DEFAULT_PORT, help=f"Serial port (default: {DEFAULT_PORT})")
     parser.add_argument("baud", nargs="?", type=int, default=DEFAULT_BAUD, help=f"Baud rate (default: {DEFAULT_BAUD})")
     args = parser.parse_args()

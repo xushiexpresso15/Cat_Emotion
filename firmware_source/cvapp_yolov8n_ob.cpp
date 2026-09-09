@@ -1,7 +1,7 @@
 /*
  * cvapp.cpp
  *
- *  Created on: 2018�~12��4��
+ *  Created on: 2018-12-04
  *      Author: 902452
  */
 
