@@ -332,6 +332,24 @@
         </div>
     </div>
 
+    <!-- Session PIN Unlock Modal -->
+    <div class="modal-backdrop" id="pin-modal" style="display: none; z-index: 9999; background: rgba(0,0,0,0.85); backdrop-filter: blur(12px);">
+        <div class="modal-card" onclick="event.stopPropagation()" style="text-align: center; max-width: 420px; padding: 32px 24px; border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; background: #141414;">
+            <h3 style="margin-bottom: 8px; font-size: 20px; font-weight: 600; color: #fff;">串流受動態密碼保護</h3>
+            <p style="color: #888; font-size: 13px; margin-bottom: 24px;">請輸入 ESP32 本次開機生成的 6 位數 Session PIN 碼。</p>
+            <div style="display: flex; gap: 8px; justify-content: center; margin-bottom: 12px;">
+                <input id="pin-input" type="text" maxlength="6" inputmode="numeric" placeholder="------" style="width: 220px; height: 50px; font-size: 28px; font-family: monospace; letter-spacing: 8px; text-align: center; background: #000; border: 1px solid rgba(255,255,255,0.25); border-radius: 10px; color: #fff; outline: none;">
+            </div>
+            <div id="pin-error" style="color: var(--c-angry); font-size: 12px; margin-bottom: 16px; min-height: 18px;"></div>
+            <button id="pin-submit-btn" onclick="submitPin()" style="width: 220px; height: 44px; background: #0071e3; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity 0.2s;">解鎖即時畫面</button>
+            <div style="color: #666; font-size: 11px; margin-top: 24px; line-height: 1.5; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 16px;">
+                如何獲取 PIN：<br>
+                1. 檢視 ESP32 USB 終端機（Serial Monitor）<br>
+                2. 連上熱點 Cat_Emotion_AP 後訪問 http://192.168.4.1/status
+            </div>
+        </div>
+    </div>
+
     <script>
         const EMOTION_MAP = {
             angry:  { name: 'Angry',  color: 'var(--c-angry)' },
@@ -380,6 +398,45 @@
         let lastLogTime = 0;
         let noFrameWarnTimer = null;
 
+        function showPinModal(show, errorMsg) {
+            const modal = document.getElementById('pin-modal');
+            const input = document.getElementById('pin-input');
+            const err = document.getElementById('pin-error');
+            if (!modal) return;
+            if (show) {
+                modal.style.display = 'flex';
+                if (err) err.textContent = errorMsg || '';
+                const savedPin = sessionStorage.getItem('cat_session_pin');
+                if (savedPin && !errorMsg) {
+                    if (input) input.value = savedPin;
+                    submitPin(savedPin);
+                } else {
+                    if (input) {
+                        input.value = '';
+                        setTimeout(() => input.focus(), 150);
+                    }
+                }
+            } else {
+                modal.style.display = 'none';
+                if (err) err.textContent = '';
+            }
+        }
+
+        function submitPin(pinOverride) {
+            const input = document.getElementById('pin-input');
+            const err = document.getElementById('pin-error');
+            const pin = pinOverride || (input ? input.value.trim() : '');
+            if (!pin || pin.length !== 6) {
+                if (err) err.textContent = '請輸入完整的 6 位數 PIN 碼';
+                return;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                sessionStorage.setItem('cat_session_pin', pin);
+                if (err) err.textContent = '正在驗證...';
+                ws.send(JSON.stringify({ type: 'auth', pin: pin }));
+            }
+        }
+
         function connectWebSocket() {
             // Auto-detect whether we are on local ESP32 or Cloud Relay
             const isLocalEsp32 = (window.location.port === '' || window.location.port === '80') &&
@@ -410,6 +467,12 @@
                 logConn.textContent = receivedWsFrame ? 'Streaming' : 'Waiting for Camera...';
                 addSystemLog(`WebSocket connected (${wsUrl})`, 'ok');
                 reconnectDelay = 1000;
+
+                // Send cached session PIN if present
+                const cachedPin = sessionStorage.getItem('cat_session_pin');
+                if (cachedPin && cachedPin.length === 6) {
+                    ws.send(JSON.stringify({ type: 'auth', pin: cachedPin }));
+                }
 
                 if (!receivedWsFrame) {
                     if (noFrameWarnTimer) clearTimeout(noFrameWarnTimer);
@@ -468,6 +531,22 @@
                 // 2. Text message: JSON inference metadata or diagnostics
                 try {
                     const data = JSON.parse(event.data);
+
+                    if (data.type === 'auth_required') {
+                        showPinModal(true, data.error);
+                        return;
+                    }
+
+                    if (data.type === 'auth_result') {
+                        if (data.success) {
+                            showPinModal(false);
+                            addSystemLog("Session PIN verified. Stream unlocked.", "ok");
+                        } else {
+                            sessionStorage.removeItem('cat_session_pin');
+                            showPinModal(true, data.error || "PIN 碼錯誤");
+                        }
+                        return;
+                    }
 
                     if (data.type === 'status') {
                         if (data.esp32_online) {
@@ -705,6 +784,13 @@
 
         function closeQrModal() {
             document.getElementById('qr-modal').style.display = 'none';
+        }
+
+        const pinInputField = document.getElementById('pin-input');
+        if (pinInputField) {
+            pinInputField.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') submitPin();
+            });
         }
 
         connectWebSocket();

@@ -16,6 +16,7 @@ const MAX_VIEWERS = parseInt(process.env.MAX_VIEWERS || '50', 10); // Max concur
 
 // State management
 let esp32Ws = null;
+let activeSessionPin = null;
 const viewerClients = new Set();
 const mjpegClients = new Set();
 
@@ -42,6 +43,7 @@ setInterval(() => {
 app.get('/api/status', (req, res) => {
     res.json({
         esp32_online: esp32Ws !== null && esp32Ws.readyState === WebSocket.OPEN,
+        pin_protected: activeSessionPin !== null,
         viewers_count: viewerClients.size + mjpegClients.size,
         fps: currentFps,
         total_frames: totalFrames,
@@ -51,6 +53,13 @@ app.get('/api/status', (req, res) => {
 
 // MJPEG Stream endpoint
 app.get('/stream', (req, res) => {
+    // If stream is PIN protected, require ?pin=XXXXXX
+    if (activeSessionPin && req.query.pin !== activeSessionPin) {
+        return res.status(403).json({
+            error: 'Forbidden: Valid session PIN required. Access via /stream?pin=XXXXXX'
+        });
+    }
+
     res.writeHead(200, {
         'Content-Type': 'multipart/x-mixed-replace; boundary=frame',
         'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -128,11 +137,28 @@ wss.on('connection', (ws, req) => {
     const pathname = parsedUrl.pathname;
 
     if (pathname === '/esp32') {
+        const incomingPin = parsedUrl.searchParams.get('pin');
+        if (incomingPin) {
+            activeSessionPin = incomingPin;
+            console.log(`[Security] ESP32 registered dynamic Session PIN: ${activeSessionPin}`);
+        } else {
+            activeSessionPin = null;
+            console.log(`[Security] ESP32 connected without PIN (open stream mode).`);
+        }
+
         console.log(`[ESP32] Connected from ${req.socket.remoteAddress}`);
         if (esp32Ws && esp32Ws !== ws && esp32Ws.readyState === WebSocket.OPEN) {
             esp32Ws.close();
         }
         esp32Ws = ws;
+
+        // If a new PIN was registered, require re-authentication for connected viewers
+        if (activeSessionPin) {
+            for (const client of viewerClients) {
+                client.isAuthenticated = false;
+                client.send(JSON.stringify({ type: 'auth_required', locked: true }));
+            }
+        }
 
         ws.on('message', (data, isBinary) => {
             if (isBinary) {
@@ -144,9 +170,9 @@ wss.on('connection', (ws, req) => {
                 totalFrames++;
                 frameCountWindow++;
 
-                // Broadcast binary JPEG to all viewer WebSockets
+                // Broadcast binary JPEG ONLY to authenticated viewer WebSockets
                 for (const client of viewerClients) {
-                    if (client.readyState === WebSocket.OPEN) {
+                    if (client.readyState === WebSocket.OPEN && client.isAuthenticated) {
                         client.send(data, { binary: true });
                     }
                 }
@@ -170,9 +196,9 @@ wss.on('connection', (ws, req) => {
                 const text = data.toString('utf8');
                 latestMeta = text;
 
-                // Broadcast metadata to all viewer WebSockets
+                // Broadcast metadata ONLY to authenticated viewer WebSockets
                 for (const client of viewerClients) {
-                    if (client.readyState === WebSocket.OPEN) {
+                    if (client.readyState === WebSocket.OPEN && client.isAuthenticated) {
                         client.send(text, { binary: false });
                     }
                 }
@@ -187,7 +213,7 @@ wss.on('connection', (ws, req) => {
             // Notify viewers that camera is offline
             const offlineMsg = JSON.stringify({ type: 'status', esp32_online: false });
             for (const client of viewerClients) {
-                if (client.readyState === WebSocket.OPEN) {
+                if (client.readyState === WebSocket.OPEN && client.isAuthenticated) {
                     client.send(offlineMsg);
                 }
             }
@@ -199,21 +225,66 @@ wss.on('connection', (ws, req) => {
 
     } else if (pathname === '/ws') {
         viewerClients.add(ws);
-        console.log(`[Viewer] Connected. Total viewers: ${viewerClients.size}`);
+        ws.isAuthenticated = (activeSessionPin === null);
+        ws.failedAttempts = 0;
+        console.log(`[Viewer] Connected from ${req.socket.remoteAddress}. Auth: ${ws.isAuthenticated ? 'OPEN' : 'PIN_REQUIRED'}. Total viewers: ${viewerClients.size}`);
 
-        // Notify viewer about current status
-        ws.send(JSON.stringify({
-            type: 'status',
-            esp32_online: esp32Ws !== null && esp32Ws.readyState === WebSocket.OPEN
-        }));
+        // Notify viewer about status and authentication requirement
+        if (!ws.isAuthenticated) {
+            ws.send(JSON.stringify({
+                type: 'auth_required',
+                locked: true,
+                esp32_online: esp32Ws !== null && esp32Ws.readyState === WebSocket.OPEN
+            }));
+        } else {
+            ws.send(JSON.stringify({
+                type: 'status',
+                locked: false,
+                esp32_online: esp32Ws !== null && esp32Ws.readyState === WebSocket.OPEN
+            }));
+            if (latestMeta) ws.send(latestMeta);
+            if (latestJpeg) ws.send(latestJpeg, { binary: true });
+        }
 
-        // Send latest metadata and JPEG immediately if available
-        if (latestMeta) {
-            ws.send(latestMeta);
-        }
-        if (latestJpeg) {
-            ws.send(latestJpeg, { binary: true });
-        }
+        ws.on('message', (data) => {
+            try {
+                const msg = JSON.parse(data.toString('utf8'));
+                if (msg.type === 'auth') {
+                    if (activeSessionPin && msg.pin === activeSessionPin) {
+                        ws.isAuthenticated = true;
+                        ws.failedAttempts = 0;
+                        console.log(`[Viewer] PIN Verified for ${req.socket.remoteAddress}`);
+                        ws.send(JSON.stringify({
+                            type: 'auth_result',
+                            success: true,
+                            locked: false,
+                            esp32_online: esp32Ws !== null && esp32Ws.readyState === WebSocket.OPEN
+                        }));
+                        if (latestMeta) ws.send(latestMeta);
+                        if (latestJpeg) ws.send(latestJpeg, { binary: true });
+                    } else {
+                        ws.failedAttempts = (ws.failedAttempts || 0) + 1;
+                        console.warn(`[Viewer] Invalid PIN (${ws.failedAttempts}/5) from ${req.socket.remoteAddress}`);
+                        if (ws.failedAttempts >= 5) {
+                            ws.send(JSON.stringify({
+                                type: 'auth_result',
+                                success: false,
+                                locked: true,
+                                error: 'Too many failed attempts. Disconnected.'
+                            }));
+                            ws.close();
+                        } else {
+                            ws.send(JSON.stringify({
+                                type: 'auth_result',
+                                success: false,
+                                locked: true,
+                                error: 'Invalid PIN. Please check ESP32 Serial or AP status page.'
+                            }));
+                        }
+                    }
+                }
+            } catch (err) {}
+        });
 
         ws.on('close', () => {
             viewerClients.delete(ws);
