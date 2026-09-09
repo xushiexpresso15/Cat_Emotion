@@ -10,5 +10,7 @@ enum Proto {
 };
 
 void initCloudRelay(const char* host, uint16_t port, const char* path, bool ssl);
+void setSessionPin(const char* pin);
+const char* getSessionPin();
 
 #endif

@@ -26,16 +26,18 @@ void startCameraServer();
 
 void loopRemoteProxy();
 
+static char s_session_pin[7] = "000000";
 static String s_full_cloud_path;
+
 void connectToCloudRelay() {
     if (!cloud_relay_enabled) return;
     static bool s_cloud_started = false;
     if (s_cloud_started) return;
     s_cloud_started = true;
 
-    s_full_cloud_path = String(cloud_relay_path);
+    s_full_cloud_path = String(cloud_relay_path) + "?pin=" + String(s_session_pin);
     if (cloud_relay_token && strlen(cloud_relay_token) > 0) {
-        s_full_cloud_path += "?token=";
+        s_full_cloud_path += "&token=";
         s_full_cloud_path += cloud_relay_token;
     }
     initCloudRelay(cloud_relay_host, cloud_relay_port, s_full_cloud_path.c_str(), cloud_relay_ssl);
@@ -48,9 +50,16 @@ void setup() {
     Serial.begin(115200);
     Serial.setTxTimeoutMs(0); // Make USB CDC non-blocking so it never stalls loopTask
     Serial.setDebugOutput(false);
+
+    // Generate random 6-digit session PIN (100000 - 999999) on each boot
+    uint32_t rand_val = (esp_random() % 900000) + 100000;
+    snprintf(s_session_pin, sizeof(s_session_pin), "%06u", rand_val);
+    setSessionPin(s_session_pin);
+
     Serial.println();
     Serial.println("=========================================");
     Serial.println("  Cat Emotion Monitoring - Camera Server");
+    Serial.printf("  [SECURITY] 當次動態觀看 PIN: %s\n", s_session_pin);
     Serial.println("=========================================");
 
     // 監聽 WiFi 連線與 Station 事件
@@ -138,8 +147,10 @@ void setup() {
     }
     Serial.printf("  獨立熱點名稱:   %s (密碼: %s)\n", ap_ssid, ap_password);
     Serial.printf("  熱點直連網址:   http://%s\n", WiFi.softAPIP().toString().c_str());
+    Serial.printf("  熱點查閱 PIN:   http://%s/status\n", WiFi.softAPIP().toString().c_str());
     Serial.printf("  原生 MJPEG 串流: /stream\n");
     Serial.printf("  即時推論 WebSocket: ws://<IP>:81/\n");
+    Serial.printf("  當次動態觀看 PIN: %s (雲端網頁解鎖用)\n", s_session_pin);
     Serial.println("=========================================\n");
 }
 

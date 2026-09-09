@@ -1147,10 +1147,31 @@ static esp_err_t index_handler(httpd_req_t* req) {
     return httpd_resp_send(req, (const char*)web_index_html_gz, web_index_html_gz_len);
 }
 
+static char s_app_session_pin[16] = "------";
+
+void setSessionPin(const char* pin) {
+    if (pin && strlen(pin) > 0) {
+        strncpy(s_app_session_pin, pin, sizeof(s_app_session_pin) - 1);
+        s_app_session_pin[sizeof(s_app_session_pin) - 1] = '\0';
+    }
+}
+
+const char* getSessionPin() {
+    return s_app_session_pin;
+}
+
+static esp_err_t pin_handler(httpd_req_t* req) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"pin\":\"%s\"}\n", s_app_session_pin);
+    return httpd_resp_send(req, buf, strlen(buf));
+}
+
 static esp_err_t status_handler(httpd_req_t* req) {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    char buf[1024];
+    char buf[1280];
     uint32_t now = millis();
     uint32_t elapsed = (g_last_frame_millis > 0) ? (now - g_last_frame_millis) : 0;
     snprintf(buf, sizeof(buf),
@@ -1159,9 +1180,16 @@ static esp_err_t status_handler(httpd_req_t* req) {
         "<title>Cat Emotion Status</title>"
         "<style>body{font-family:sans-serif;padding:20px;max-width:600px;margin:auto;background:#f5f5f7;}"
         ".card{background:white;padding:20px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.1);margin-bottom:16px;}"
+        ".pin-box{background:#eef7ff;border:2px solid #0071e3;border-radius:12px;padding:16px;margin-bottom:16px;text-align:center;}"
+        ".pin-num{font-size:36px;font-weight:bold;letter-spacing:6px;color:#0071e3;margin:8px 0;font-family:monospace;}"
         "h2{margin-top:0;color:#333;}.ok{color:#2ecc71;font-weight:bold;}.warn{color:#e67e22;font-weight:bold;}"
         "a{display:inline-block;margin-top:8px;color:#0071e3;text-decoration:none;font-weight:bold;}"
         "</style></head><body>"
+        "<div class='pin-box'>"
+        "<h3 style='margin:0;color:#0071e3;'>Current Session PIN</h3>"
+        "<div class='pin-num'>%s</div>"
+        "<p style='color:#555;font-size:13px;margin:0;'>Enter this PIN on the web dashboard to unlock the live stream.</p>"
+        "</div>"
         "<div class='card'>"
         "<h2>Cat Emotion AI Server</h2>"
         "<p><b>Status:</b> %s</p>"
@@ -1174,9 +1202,11 @@ static esp_err_t status_handler(httpd_req_t* req) {
         "<div class='card'>"
         "<h3>Links</h3>"
         "<p><a href='/'>&gt;&gt; Open Web UI (Boxes & Stream)</a></p>"
+        "<p><a href='/pin'>&gt;&gt; JSON PIN Endpoint (/pin)</a></p>"
         "<p><a href='http://192.168.4.1:8080/stream'>&gt;&gt; Direct MJPEG Stream (Port 8080)</a></p>"
         "</div>"
         "</body></html>",
+        s_app_session_pin,
         (g_total_frames > 0 && elapsed < 4000) ? "<span class='ok'>Streaming Active</span>" : (g_total_frames > 0 ? "<span class='warn'>Idle</span>" : "<span class='warn'>Waiting for frames</span>"),
         (unsigned int)g_total_frames,
         (unsigned int)g_last_frame_bytes,
@@ -1264,10 +1294,16 @@ void startCameraServer() {
         .user_ctx = NULL
     };
 
+    httpd_uri_t pin_uri = {.uri      = "/pin",
+                           .method   = HTTP_GET,
+                           .handler  = pin_handler,
+                           .user_ctx = NULL};
+
     Serial.printf("[HTTP] Starting web server on port: %d ...\n", config.server_port);
     if ((ret = httpd_start(&web_httpd, &config)) == ESP_OK) {
         httpd_register_uri_handler(web_httpd, &index_uri);
         httpd_register_uri_handler(web_httpd, &status_uri);
+        httpd_register_uri_handler(web_httpd, &pin_uri);
         httpd_register_uri_handler(web_httpd, &result_uri);
         httpd_register_uri_handler(web_httpd, &command_uri);
         httpd_register_uri_handler(web_httpd, &stream_redirect_uri);
