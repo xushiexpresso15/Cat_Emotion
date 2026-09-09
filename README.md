@@ -56,20 +56,25 @@ Switch to the `esp32-firmware` branch:
 ```bash
 git checkout esp32-firmware
 ```
-Open `cat_emotion_camera_server.ino` and configure your Wi-Fi credentials and cloud relay target:
+Copy `secrets.example.h` to create your local `secrets.h` (which is excluded from Git tracking):
+```bash
+cp secrets.example.h secrets.h
+```
+Configure your Wi-Fi credentials and cloud relay token in `secrets.h`:
 ```cpp
 // Target networks for Station mode (prioritized connection)
 const KnownNetwork known_networks[] = {
-    {"Your_Hotspot_SSID", "Your_Password"},
-    {"Home_WiFi_SSID", "Your_Password"}
+    {"YOUR_HOTSPOT_SSID", "YOUR_HOTSPOT_PASSWORD"},
+    {"YOUR_WIFI_SSID",    "YOUR_WIFI_PASSWORD"}
 };
 
 // Cloud relay configuration
-const bool cloud_relay_enabled = true;
-const char* cloud_relay_host = "cat-emo-live.onrender.com";
-const uint16_t cloud_relay_port = 443;
-const char* cloud_relay_path = "/esp32";
-const bool cloud_relay_ssl = true;
+const bool     cloud_relay_enabled = true;
+const char*    cloud_relay_host    = "your-relay-service.onrender.com";
+const uint16_t cloud_relay_port    = 443;
+const char*    cloud_relay_path    = "/esp32";
+const bool     cloud_relay_ssl     = true;
+const char*    cloud_relay_token   = "your_stream_secret_here";
 ```
 Compile and flash using Arduino CLI:
 ```bash
@@ -91,7 +96,8 @@ To deploy on Render:
 1. Log in to dashboard.render.com and create a new Web Service.
 2. Select this repository and set the branch to `cloud-relay`.
 3. Set Language to `Node`, Build Command to `npm install`, and Start Command to `node server.js`.
-4. Choose the free plan and deploy. Render will assign you a permanent `https://<service-name>.onrender.com` URL.
+4. (Optional) Set the `STREAM_SECRET` environment variable in the Render dashboard to require token authentication from the ESP32.
+5. Choose the free plan and deploy. Render will assign you a permanent `https://<service-name>.onrender.com` URL.
 
 ## Model Details and Quantization
 - Emotional Classes:

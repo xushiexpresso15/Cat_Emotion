@@ -1,1 +1,6 @@
 push_all_branches.sh
+secrets.h
+.env
+.env.local
+node_modules/
+build/
