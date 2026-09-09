@@ -17,6 +17,7 @@ const MAX_VIEWERS = parseInt(process.env.MAX_VIEWERS || '50', 10); // Max concur
 // State management
 let esp32Ws = null;
 let activeSessionPin = null;
+let esp32LocalIp = null;
 const viewerClients = new Set();
 const mjpegClients = new Set();
 
@@ -44,6 +45,7 @@ app.get('/api/status', (req, res) => {
     res.json({
         esp32_online: esp32Ws !== null && esp32Ws.readyState === WebSocket.OPEN,
         pin_protected: activeSessionPin !== null,
+        esp32_local_ip: esp32LocalIp,
         viewers_count: viewerClients.size + mjpegClients.size,
         fps: currentFps,
         total_frames: totalFrames,
@@ -138,6 +140,11 @@ wss.on('connection', (ws, req) => {
 
     if (pathname === '/esp32') {
         const incomingPin = parsedUrl.searchParams.get('pin');
+        const incomingIp = parsedUrl.searchParams.get('ip') || parsedUrl.searchParams.get('local_ip');
+        if (incomingIp) {
+            esp32LocalIp = incomingIp.trim();
+            console.log(`[ESP32] Registered Local IP: ${esp32LocalIp}`);
+        }
         if (incomingPin) {
             activeSessionPin = incomingPin;
             console.log(`[Security] ESP32 registered dynamic Session PIN: ${activeSessionPin}`);
@@ -156,7 +163,11 @@ wss.on('connection', (ws, req) => {
         if (activeSessionPin) {
             for (const client of viewerClients) {
                 client.isAuthenticated = false;
-                client.send(JSON.stringify({ type: 'auth_required', locked: true }));
+                client.send(JSON.stringify({
+                    type: 'auth_required',
+                    locked: true,
+                    esp32_local_ip: esp32LocalIp
+                }));
             }
         }
 
@@ -194,6 +205,12 @@ wss.on('connection', (ws, req) => {
             } else {
                 // JSON Metadata / Emotion string
                 const text = data.toString('utf8');
+                try {
+                    const parsed = JSON.parse(text);
+                    if (parsed.ip || parsed.local_ip) {
+                        esp32LocalIp = String(parsed.ip || parsed.local_ip).trim();
+                    }
+                } catch (e) {}
                 latestMeta = text;
 
                 // Broadcast metadata ONLY to authenticated viewer WebSockets
@@ -211,7 +228,7 @@ wss.on('connection', (ws, req) => {
                 esp32Ws = null;
             }
             // Notify viewers that camera is offline
-            const offlineMsg = JSON.stringify({ type: 'status', esp32_online: false });
+            const offlineMsg = JSON.stringify({ type: 'status', esp32_online: false, esp32_local_ip: esp32LocalIp });
             for (const client of viewerClients) {
                 if (client.readyState === WebSocket.OPEN && client.isAuthenticated) {
                     client.send(offlineMsg);
@@ -234,13 +251,15 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({
                 type: 'auth_required',
                 locked: true,
-                esp32_online: esp32Ws !== null && esp32Ws.readyState === WebSocket.OPEN
+                esp32_online: esp32Ws !== null && esp32Ws.readyState === WebSocket.OPEN,
+                esp32_local_ip: esp32LocalIp
             }));
         } else {
             ws.send(JSON.stringify({
                 type: 'status',
                 locked: false,
-                esp32_online: esp32Ws !== null && esp32Ws.readyState === WebSocket.OPEN
+                esp32_online: esp32Ws !== null && esp32Ws.readyState === WebSocket.OPEN,
+                esp32_local_ip: esp32LocalIp
             }));
             if (latestMeta) ws.send(latestMeta);
             if (latestJpeg) ws.send(latestJpeg, { binary: true });
