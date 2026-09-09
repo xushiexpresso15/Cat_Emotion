@@ -28,7 +28,7 @@ const char* ap_password = "password123";
 // 雲端中繼站 (Cloud Relay) 推流設定
 // ===========================
 const bool cloud_relay_enabled  = true;
-const char* cloud_relay_host    = "buying-wild-render-understood.trycloudflare.com";
+const char* cloud_relay_host    = "cat-emo-live.onrender.com";
 const uint16_t cloud_relay_port = 443;
 const char* cloud_relay_path    = "/esp32";
 const bool cloud_relay_ssl      = true;
