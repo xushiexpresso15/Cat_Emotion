@@ -4,6 +4,25 @@ A lightweight, high-concurrency Node.js relay broker that bridges resource-const
 
 ---
 
+## Prerequisites & Runtime Environment
+
+### Supported Operating Systems
+- **Linux**: Ubuntu 20.04 / 22.04 / 24.04 LTS, Debian 11 / 12, Alpine Linux 3.18+, or compatible Linux distributions.
+- **macOS**: macOS 12 Monterey or newer (Intel / Apple Silicon).
+- **Windows**: Windows 10 / 11 (native or WSL2).
+- **Container / Cloud**: Docker 20+, Render.com, Railway.app, Fly.io, AWS ECS, or any standard container host.
+
+### Runtime Requirements
+- **Node.js**: Version 18.x LTS or 20.x LTS (Node.js 18+ required).
+- **Package Manager**: `npm` (v9+) or `yarn` / `pnpm`.
+
+### Required NPM Packages
+All dependencies are declared in `package.json` and installed via `npm install`:
+- `express` (^4.19.2) - High-performance HTTP server for static dashboard assets and MJPEG stream.
+- `ws` (^8.18.0) - Fast, compliant WebSocket implementation for low-latency video ingestion and broadcast.
+
+---
+
 ## Why a Cloud Relay?
 
 The ESP32-S3 microcontroller handles video capture, dual-UART synchronization with the Himax WiseEye2 NPU, and JPEG compression. While the ESP32-S3 has integrated Wi-Fi, its internal network buffer and memory cannot sustain multiple concurrent HTTP/WebSocket streams without severe frame drops or Wi-Fi stack panic.
