@@ -325,7 +325,7 @@
     <!-- QR Code Modal -->
     <div class="modal-backdrop" id="qr-modal" onclick="closeQrModal(event)">
         <div class="modal-card" onclick="event.stopPropagation()">
-            <h3 style="margin-bottom: 8px;">📱 掃描 QR Code 觀看</h3>
+            <h3 style="margin-bottom: 8px;">掃描 QR Code 觀看</h3>
             <img id="qr-img" src="" alt="QR Code">
             <p id="qr-url"></p>
             <button class="modal-close-btn" onclick="closeQrModal()">關閉</button>
@@ -520,18 +520,44 @@
                 error: 'var(--c-angry)'
             };
             const color = colors[level] || colors.info;
+
             const item = document.createElement('div');
             item.className = 'log-entry';
-            item.innerHTML = `
-                <div class="log-dot" style="background: ${color}"></div>
-                <div style="flex: 1; min-width: 0;">
-                    <div class="log-meta">
-                        <span style="color: ${color}; font-weight: 600;">[SYS ${level.toUpperCase()}]</span>
-                        <span>${time}</span>
-                    </div>
-                    <div class="log-msg" style="color: ${color}; font-size: 11px;">${text}</div>
-                </div>
-            `;
+
+            const dot = document.createElement('div');
+            dot.className = 'log-dot';
+            dot.style.background = color;
+
+            const body = document.createElement('div');
+            body.style.flex = '1';
+            body.style.minWidth = '0';
+
+            const meta = document.createElement('div');
+            meta.className = 'log-meta';
+
+            const tag = document.createElement('span');
+            tag.style.color = color;
+            tag.style.fontWeight = '600';
+            tag.textContent = `[SYS ${level.toUpperCase()}]`;
+
+            const timeSpan = document.createElement('span');
+            timeSpan.textContent = time;
+
+            meta.appendChild(tag);
+            meta.appendChild(timeSpan);
+
+            const msg = document.createElement('div');
+            msg.className = 'log-msg';
+            msg.style.color = color;
+            msg.style.fontSize = '11px';
+            msg.textContent = text;
+
+            body.appendChild(meta);
+            body.appendChild(msg);
+
+            item.appendChild(dot);
+            item.appendChild(body);
+
             logContent.prepend(item);
             while (logContent.children.length > 50) {
                 logContent.removeChild(logContent.lastChild);
@@ -621,17 +647,44 @@
 
             const item = document.createElement('div');
             item.className = 'log-entry';
-            item.innerHTML = `
-                <div class="log-dot" style="background: ${color}"></div>
-                <div style="flex: 1; min-width: 0;">
-                    <div class="log-meta">
-                        <span style="color: ${color}; font-weight: 600;">${isDetect ? em.name.toUpperCase() : 'NO TARGET'}</span>
-                        <span>${time}</span>
-                    </div>
-                    <div class="log-msg">${isDetect ? `Confidence: ${pct}%` : 'No detection'}</div>
-                    <div class="log-raw" style="color: var(--text-muted); font-size: 10px; margin-top: 3px; font-family: ui-monospace, monospace; word-break: break-all;">Raw: ${rawStr}</div>
-                </div>
-            `;
+
+            const dot = document.createElement('div');
+            dot.className = 'log-dot';
+            dot.style.background = color;
+
+            const body = document.createElement('div');
+            body.style.flex = '1';
+            body.style.minWidth = '0';
+
+            const meta = document.createElement('div');
+            meta.className = 'log-meta';
+
+            const tag = document.createElement('span');
+            tag.style.color = color;
+            tag.style.fontWeight = '600';
+            tag.textContent = isDetect ? em.name.toUpperCase() : 'NO TARGET';
+
+            const timeSpan = document.createElement('span');
+            timeSpan.textContent = time;
+
+            meta.appendChild(tag);
+            meta.appendChild(timeSpan);
+
+            const msg = document.createElement('div');
+            msg.className = 'log-msg';
+            msg.textContent = isDetect ? `Confidence: ${pct}%` : 'No detection';
+
+            const rawDiv = document.createElement('div');
+            rawDiv.className = 'log-raw';
+            rawDiv.style.cssText = 'color: var(--text-muted); font-size: 10px; margin-top: 3px; font-family: ui-monospace, monospace; word-break: break-all;';
+            rawDiv.textContent = 'Raw: ' + rawStr;
+
+            body.appendChild(meta);
+            body.appendChild(msg);
+            body.appendChild(rawDiv);
+
+            item.appendChild(dot);
+            item.appendChild(body);
             logContent.prepend(item);
 
             while (logContent.children.length > 50) {

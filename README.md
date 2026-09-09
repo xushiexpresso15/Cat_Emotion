@@ -121,12 +121,28 @@ docker compose up -d
    - **Build Command**: `npm install`
    - **Start Command**: `node server.js`
    - **Plan**: `Free`
-5. Click **Create Web Service**. Once deployed, Render provides a permanent public URL (for example, `https://your-service.onrender.com`).
-6. Point your ESP32 firmware to this URL:
+5. (Optional but Recommended) Under **Environment Variables**, add:
+   - `STREAM_SECRET`: Set to a strong secret key. Your ESP32 must provide this token via `?token=<SECRET>` to stream.
+   - `MAX_PAYLOAD`: `1048576` (Default 1MB, limits frame payload size against DoS).
+   - `MAX_VIEWERS`: `50` (Protects server memory from excess connections).
+6. Click **Create Web Service**. Once deployed, Render provides a permanent public URL (for example, `https://your-service.onrender.com`).
+7. Point your ESP32 firmware to this URL:
    - Host: `your-service.onrender.com`
    - Port: `443`
    - Path: `/esp32`
    - SSL: Enabled
+   - Token: Matching `STREAM_SECRET`
+
+---
+
+## Environment Variables Reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3000` | Local HTTP and WebSocket port |
+| `STREAM_SECRET` | `null` (Open dev mode) | Pre-shared key required at `WS /esp32?token=<SECRET>` |
+| `MAX_PAYLOAD` | `1048576` (1 MB) | Maximum incoming WebSocket payload in bytes |
+| `MAX_VIEWERS` | `50` | Maximum simultaneous browser connections before rate-limiting |
 
 ### Exposing Local Server via Cloudflare Tunnel
 

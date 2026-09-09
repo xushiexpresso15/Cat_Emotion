@@ -10,6 +10,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
+const STREAM_SECRET = process.env.STREAM_SECRET || null;
+const MAX_PAYLOAD = parseInt(process.env.MAX_PAYLOAD || '1048576', 10); // 1 MB limit against OOM DoS
+const MAX_VIEWERS = parseInt(process.env.MAX_VIEWERS || '50', 10); // Max concurrent viewers
 
 // State management
 let esp32Ws = null;
@@ -71,12 +74,42 @@ app.get('/stream', (req, res) => {
     });
 });
 
-// WebSocket Server attached to HTTP server
-const wss = new WebSocketServer({ noServer: true });
+// WebSocket Server attached to HTTP server (enforcing 1MB max payload to prevent OOM DoS)
+const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_PAYLOAD
+});
 
 server.on('upgrade', (request, socket, head) => {
-    const pathname = request.url ? request.url.split('?')[0] : '';
-    if (pathname === '/esp32' || pathname === '/ws') {
+    let parsedUrl;
+    try {
+        parsedUrl = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    } catch (e) {
+        socket.destroy();
+        return;
+    }
+    const pathname = parsedUrl.pathname;
+
+    if (pathname === '/esp32') {
+        if (STREAM_SECRET) {
+            const token = parsedUrl.searchParams.get('token') || request.headers['x-stream-token'];
+            if (token !== STREAM_SECRET) {
+                console.warn(`[Security] Unauthorized /esp32 ingestion attempt from ${socket.remoteAddress}`);
+                socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+                socket.destroy();
+                return;
+            }
+        }
+        wss.handleUpgrade(request, socket, head, (ws) => {
+            wss.emit('connection', ws, request);
+        });
+    } else if (pathname === '/ws') {
+        if (viewerClients.size >= MAX_VIEWERS) {
+            console.warn(`[Security] Viewer connection rejected: maximum viewer limit (${MAX_VIEWERS}) reached.`);
+            socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
+            socket.destroy();
+            return;
+        }
         wss.handleUpgrade(request, socket, head, (ws) => {
             wss.emit('connection', ws, request);
         });
@@ -86,7 +119,13 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 wss.on('connection', (ws, req) => {
-    const pathname = req.url ? req.url.split('?')[0] : '';
+    let parsedUrl;
+    try {
+        parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    } catch (e) {
+        parsedUrl = { pathname: '' };
+    }
+    const pathname = parsedUrl.pathname;
 
     if (pathname === '/esp32') {
         console.log(`[ESP32] Connected from ${req.socket.remoteAddress}`);
@@ -97,7 +136,10 @@ wss.on('connection', (ws, req) => {
 
         ws.on('message', (data, isBinary) => {
             if (isBinary) {
-                // JPEG Frame
+                // Reject invalid or non-JPEG binary payloads (JPEG starts with SOI 0xFF, 0xD8)
+                if (!data || data.length < 4 || data[0] !== 0xFF || data[1] !== 0xD8) {
+                    return;
+                }
                 latestJpeg = data;
                 totalFrames++;
                 frameCountWindow++;
@@ -206,5 +248,8 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`  Local HTTP / Viewer: http://localhost:${PORT}`);
     console.log(`  ESP32 Push Endpoint: ws://localhost:${PORT}/esp32`);
     console.log(`  Viewer WS Endpoint:   ws://localhost:${PORT}/ws`);
+    console.log(`  Authentication:      ${STREAM_SECRET ? 'ENABLED (STREAM_SECRET set)' : 'DISABLED (Open dev mode)'}`);
+    console.log(`  Max Message Payload: ${Math.round(MAX_PAYLOAD / 1024)} KB`);
+    console.log(`  Max Concurrent View: ${MAX_VIEWERS}`);
     console.log(`=========================================`);
 });
