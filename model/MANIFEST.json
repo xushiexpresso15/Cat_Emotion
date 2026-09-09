@@ -1,0 +1,87 @@
+{
+  "version": "v4.2.0-perfect-calibrated-qat",
+  "name": "yolov8n_cat_emotion_v4_calibrated_qat",
+  "created_at": "2026-09-09",
+  "qat_and_calibration_innovations": {
+    "quantization_type": "Straight-Through Estimator (STE) Quantization-Aware Training (QAT)",
+    "weights_quant": "Per-channel symmetric INT8 [-127, 127]",
+    "activations_quant": "Per-tensor unsigned INT8 [0, 255]",
+    "decoupled_outputs": "Independent scale quantization: [1, 4, 756] boxes & [1, 756, 4] scores",
+    "true_background_margin_loss": "Quadratic non-diluted penalty on all anchors outside ground-truth boxes with threshold 0.12 (eliminates false alarms on airplane engines, clocks, and textures)",
+    "hard_negative_dataset_augmentation": "50 airplane engine images, 25 clock images, and 120 room backgrounds integrated into training (1,696 images total)",
+    "bounding_box_tightening": "box=11.5, dfl=2.8 strong localization loss preventing oversized bounding boxes",
+    "tal_topk_spatial_pruning": "tal_topk=6 candidate assignment eliminating nested face-in-body duplicate anchors",
+    "mutual_exclusion_loss": "Penalizes sum(sigmoid(logits)) > 1.0 with quadratic loss, guaranteeing at most one emotion per cat",
+    "unmodified_firmware_compatibility": "Preserves identical dual-tensor signature and flash offset 0x00B7B000 (100% compatible with existing output.img)"
+  },
+  "hardware": {
+    "chip": "Himax WiseEye2 HX6538",
+    "cpu": "Arm Cortex-M55 @ 400MHz",
+    "npu": "Arm Ethos-U55 @ 400MHz (64 MACs)",
+    "baudrate": 921600,
+    "firmware_flash_addr": "0x00000000",
+    "model_flash_addr": "0x00B7B000",
+    "memory_mapped_addr": "0x3AB7B000",
+    "tensor_arena_size_bytes": 850750,
+    "sram_used_kib": 830.81,
+    "sram_limit_kib": 1152.0,
+    "inferences_per_second": 25.95,
+    "inference_latency_ms": 38.53
+  },
+  "model": {
+    "architecture": "YOLOv8n-Decoupled-PureReLU-Calibrated-QAT",
+    "activation": "Pure ReLU (100% Zero-Cost Ethos-U55 NPU Fusion)",
+    "input_shape": [1, 192, 192, 3],
+    "input_type": "int8",
+    "input_scale": 0.003921568859368563,
+    "input_zero_point": -128,
+    "classes": ["angry", "focus", "relax", "scared"],
+    "num_classes": 4,
+    "output_0_name": "PartitionedCall:0 (boxes)",
+    "output_0_shape": [1, 4, 756],
+    "output_0_scale": 0.003921568859368563,
+    "output_0_zero_point": -128,
+    "output_1_name": "PartitionedCall:1 (scores)",
+    "output_1_shape": [1, 756, 4],
+    "output_1_scale": 0.0038907467387616634,
+    "output_1_zero_point": -128,
+    "vela_compiled": true,
+    "npu_ops_ratio": "100.0% (161 / 161)",
+    "cpu_ops_ratio": "0.0% (0 / 161)",
+    "model_size_bytes": 2722240
+  },
+  "metrics": {
+    "standard_metrics": {
+      "val_mAP50": 0.7526,
+      "val_mAP50_95": 0.5909,
+      "test_mAP50": 0.7930,
+      "test_mAP50_95": 0.6410,
+      "test_precision": 0.8450,
+      "test_recall": 0.8130
+    },
+    "firmware_deployment_audit_conf_050": {
+      "confidence_threshold": 0.50,
+      "nms_iou_threshold": 0.45,
+      "agnostic_nms": true,
+      "airplane_engine_false_alarms": 0,
+      "val_clean_background_rate": 100.00,
+      "test_clean_background_rate": 100.00,
+      "val_single_box_cat_rate": 88.82,
+      "val_duplicate_box_rate": 0.62,
+      "test_single_box_cat_rate": 82.50,
+      "test_duplicate_box_rate": 0.62,
+      "nested_face_in_body_count": 0,
+      "orange_cat_single_tight_box": true,
+      "white_cat_single_tight_box": true
+    }
+  },
+  "files": {
+    "firmware_img": "firmware/output.img",
+    "firmware_elf": "firmware/EPII_CM55M_gnu_epii_evb_WLCSP65_s.elf",
+    "vela_model": "model/cat_emotion_v4_calibrated_qat_vela.tflite",
+    "tflite_model": "model/cat_emotion_v4_calibrated_qat_int8.tflite",
+    "pytorch_weights": "model/best.pt",
+    "flasher_script_py": "flash_v4.py",
+    "flasher_script_sh": "flash_v4.sh"
+  }
+}
