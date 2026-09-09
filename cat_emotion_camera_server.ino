@@ -6,29 +6,31 @@
 #include "app_httpd.h"
 
 // ===========================
-// WiFi 設定（AP + STA 同步雙工模式）
+// WiFi Configuration (AP + STA Concurrent Dual-Mode)
 // ===========================
 struct KnownNetwork {
     const char* ssid;
     const char* password;
 };
 
-// 已知 Station 網路列表（依序優先連線：手機熱點優先，家中路由器備援）
+// List of known Station networks (tried in order)
+// Replace with your local Wi-Fi SSID and password
 const KnownNetwork known_networks[] = {
-    {"YOUR_HOTSPOT_SSID", "YOUR_PASSWORD"},  // 手機熱點（出門/行動電源展示/雲端模式）
-    {"YOUR_ROUTER_SSID", "YOUR_PASSWORD"}              // 家中路由器（本地開發）
+    {"YOUR_HOTSPOT_SSID", "YOUR_HOTSPOT_PASSWORD"},  // Primary (Mobile hotspot / field test)
+    {"YOUR_WIFI_SSID",    "YOUR_WIFI_PASSWORD"}      // Secondary (Home / lab router)
 };
 const size_t NUM_KNOWN_NETWORKS = sizeof(known_networks) / sizeof(known_networks[0]);
 
-// 獨立 AP 熱點設定（隨身出門/行動電源直連模式：手機連上熱點直連 192.168.4.1）
+// Standalone SoftAP configuration (direct connection at http://192.168.4.1)
 const char* ap_ssid     = "Cat_Emotion_AP";
 const char* ap_password = "password123";
 
 // ===========================
-// 雲端中繼站 (Cloud Relay) 推流設定
+// Cloud Relay Streaming Configuration
 // ===========================
-const bool cloud_relay_enabled  = true;
-const char* cloud_relay_host    = "cat-emo-live.onrender.com";
+// Set cloud_relay_enabled to true when streaming to a public relay (e.g., Render, Railway, VPS)
+const bool cloud_relay_enabled  = false;
+const char* cloud_relay_host    = "your-relay-service.onrender.com";
 const uint16_t cloud_relay_port = 443;
 const char* cloud_relay_path    = "/esp32";
 const bool cloud_relay_ssl      = true;

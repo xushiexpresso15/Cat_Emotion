@@ -1,29 +1,161 @@
-# Cat Emotion ESP32-S3 Wireless Telemetry Gateway Firmware
+# Cat Emotion ESP32-S3 Gateway Firmware
 
-## Overview
-This firmware runs on the Seeed Studio XIAO ESP32-S3 microcontroller. It serves as the primary communications gateway between the Grove Vision AI V2 module and downstream consumers.
+Production-grade firmware for the **Seeed Studio XIAO ESP32-S3** microcontroller. It bridges the Himax WiseEye2 vision AI module with local browser clients and remote cloud relays via high-throughput dual-band streaming.
 
-## Architecture and Capabilities
-- Dual-Mode Wi-Fi: Maintains an independent Access Point (SoftAP SSID: `Cat_Emotion_AP`, static IP: `192.168.4.1`) for local peer-to-peer access, while simultaneously operating as a Station (STA) client connecting to external Wi-Fi or mobile hotspots.
-- High-Speed UART Communication: Communicates with the Himax WiseEye2 processor at 921,600 baud using large circular buffers allocated in 8 MB OPI PSRAM.
-- Simultaneous Dual-WebSocket Streaming: Broadcasts decoded JPEG frames and inference JSON locally on port 81, and simultaneously establishes an outbound TLS WebSocket client connection (`wss://`) to push telemetry to the designated cloud relay.
-- Non-Blocking Background Reconnection: Background health checks ensure automatic reconnection to mobile hotspots without interrupting the real-time video stream.
-- Hardware Reset Line: Pin D3 triggers an active-low reset pulse to the Himax module upon boot to ensure synchronized state machine execution.
+---
 
-## Hardware Pinout
-- GPIO D6: UART TX -> Connected to Grove Vision AI RX
-- GPIO D7: UART RX -> Connected to Grove Vision AI TX
-- GPIO D3: Reset Out -> Connected to Grove Vision AI RST
-- VCC: 3.3V power supply rail
-- GND: Common ground reference
+## Architecture Overview
 
-## Compilation and Flashing
-Prerequisites: Arduino CLI configured with ESP32 board support package (v3.x or later).
+The ESP32-S3 serves as the network gateway and telemetry distributor for the entire system:
+
+```
++--------------------------------+                  +-----------------------------------+
+|     Grove Vision AI V2         |                  |        Seeed Studio XIAO          |
+|  (Himax HX6538 + Ethos-U55)   |                  |             ESP32-S3              |
+|                                |   High-Speed     |                                   |
+| - 240x240 Camera ISP           |   UART @ 921600  | - Core 1: SSCMA Frame Parser      |
+| - Dual-Head YOLO NPU Inference | ---------------> | - Core 0: Dual-Mode Wi-Fi Stack   |
+| - D3 Hardware Reset Line       | <--------------- | - 8MB OPI PSRAM Frame Buffers     |
++--------------------------------+                  +-----------------------------------+
+                                                                   |             |
+                                            Local Wi-Fi / SoftAP   |             | TLS WebSocket
+                                            (192.168.4.1)          |             | (wss://)
+                                                                   v             v
+                                                            +------------+ +------------+
+                                                            | Local Web  | | Cloud      |
+                                                            | Dashboard  | | Relay Node |
+                                                            +------------+ +------------+
+```
+
+### Key Technical Capabilities
+
+1. **Dual-Mode Wi-Fi (Concurrent AP + STA)**:
+   - **SoftAP Mode (`192.168.4.1`)**: Creates an independent wireless hotspot (`Cat_Emotion_AP`). Allows mobile phones or laptops to connect and monitor live telemetry directly in the field without requiring an external Wi-Fi router.
+   - **Station Mode (STA)**: Concurrently associates with external routers or mobile hotspots. Enables automatic outbound tunneling to the cloud relay.
+   - **Non-Blocking Reconnection**: Asynchronous background health check automatically reconnects dropped Station links without freezing frame capture or dropping SoftAP clients.
+
+2. **High-Speed Dual-Ring Buffer (PSRAM)**:
+   - Communicates with the Himax processor at 921,600 baud.
+   - Leverages 8 MB Octal-SPI (OPI) PSRAM for zero-copy frame double-buffering, preventing packet corruption during high-framerate bursts.
+
+3. **Multi-Channel Distribution**:
+   - **Embedded Web Server (Port 80)**: Serves a modern HTML5 dashboard stored in compressed flash memory.
+   - **Local WebSocket Server (Port 81)**: Broadcasts binary JPEG frames and JSON bounding boxes directly to local clients at ultra-low latency.
+   - **Outbound Cloud Relay Client**: Simultaneously pushes frames and inference telemetry to a public cloud relay service (such as Render or Railway) over secure TLS.
+   - **Standard MJPEG Endpoint (`/stream`)**: Provides a native HTTP multipart stream for Home Assistant, VLC, or OpenCV.
+
+4. **Hardware State Synchronization**:
+   - GPIO pin D3 drives the Himax module reset line upon startup, ensuring deterministic SSCMA protocol synchronization on every boot.
+
+---
+
+## Hardware Pinout & Wiring
+
+| XIAO ESP32-S3 Pin | Function | Grove Vision AI V2 Pin | Description |
+|---|---|---|---|
+| `D6` | UART TX | `RX` | Serial command transmission |
+| `D7` | UART RX | `TX` | High-speed telemetry ingestion (921,600 baud) |
+| `D3` | GPIO Out | `RST` | Active-low hardware reset pulse |
+| `3V3` | Power Out | `3V3` | Regulated 3.3V power rail |
+| `GND` | Ground | `GND` | Common ground reference |
+
+---
+
+## Configuration
+
+All network credentials and cloud parameters are configured at the top of `cat_emotion_camera_server.ino`:
+
+### 1. Wi-Fi Settings
+```cpp
+// Station networks (tried in order)
+const KnownNetwork known_networks[] = {
+    {"YOUR_HOTSPOT_SSID", "YOUR_HOTSPOT_PASSWORD"},  // Primary (e.g. mobile hotspot)
+    {"YOUR_ROUTER_SSID",  "YOUR_ROUTER_PASSWORD"}   // Secondary (e.g. home router)
+};
+
+// SoftAP settings (direct connection)
+const char* ap_ssid     = "Cat_Emotion_AP";
+const char* ap_password = "password123";
+```
+
+### 2. Cloud Relay Settings
+```cpp
+// Set to true to enable outbound streaming to your cloud relay
+const bool cloud_relay_enabled  = true;
+const char* cloud_relay_host    = "your-relay-service.onrender.com";
+const uint16_t cloud_relay_port = 443;
+const char* cloud_relay_path    = "/esp32";
+const bool cloud_relay_ssl      = true;
+```
+
+---
+
+## Build & Flash Instructions
+
+### Prerequisites
+
+1. Install [Arduino CLI](https://arduino.github.io/arduino-cli/) or Arduino IDE (v2.x).
+2. Install the ESP32 Board Support Package (version 2.0.14 or 3.0+):
+   ```bash
+   arduino-cli core update-index
+   arduino-cli core install esp32:esp32
+   ```
+3. Install required libraries:
+   - `Seeed_Arduino_SSCMA`
+   - `WebSockets` (by Markus Sattler)
+
+### Compilation via Arduino CLI (Recommended)
+
+> **Important**: The XIAO ESP32-S3 requires Octal PSRAM (`PSRAM=opi`) and a partition scheme large enough for the firmware image (`Huge APP`).
 
 ```bash
-# Compile with 8MB OPI PSRAM enabled
-arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi .
+# Clone the firmware branch
+git clone -b esp32-firmware https://github.com/xushiexpresso15/Cat_Emotion.git esp32-gateway
+cd esp32-gateway
 
-# Upload to connected board
-arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi .
+# Compile with OPI PSRAM enabled
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=huge_app .
+
+# Upload to the device (replace /dev/ttyACM0 with your board port)
+arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi,PartitionScheme=huge_app .
 ```
+
+### Arduino IDE Configuration
+
+If using the GUI:
+- **Board**: `XIAO_ESP32S3`
+- **Flash Size**: `8MB (64Mb)`
+- **Partition Scheme**: `Huge APP (3MB No OTA/1MB SPIFFS)`
+- **PSRAM**: `OPI PSRAM`
+- **Upload Speed**: `921600`
+- **USB CDC On Boot**: `Enabled`
+
+---
+
+## Local Web Dashboard
+
+The firmware embeds a compressed web application (`web_index.h`). When you connect to the device IP or navigate to `http://cat.local` (or `http://192.168.4.1` on SoftAP), the page renders:
+- Real-time video frame canvas.
+- Dynamically rendered bounding boxes with confidence scores.
+- Classified cat emotional state (e.g., Relaxed, Scared, Angry, Focused).
+- Network RSSI and FPS performance graphs.
+
+### Regenerating `web_index.h`
+If you modify the frontend HTML/CSS/JS in a local `index.html` file, update the embedded C header with:
+```bash
+gzip -9 -c index.html | xxd -i > web_index.h
+```
+
+---
+
+## Extending the Firmware
+
+- **Home Assistant MQTT Auto-Discovery**: Include `PubSubClient` to broadcast emotion detection events to an MQTT broker whenever classification confidence exceeds a threshold.
+- **On-Device Logging**: Save snapshot frames to an attached micro-SD card module when negative emotional states (Fear/Aggression) are detected.
+- **RGB Status Indicator**: Drive the on-board WS2812 RGB LED to visually reflect the cat's detected state in real time without opening a browser.
+
+---
+
+## License
+
+This firmware is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
