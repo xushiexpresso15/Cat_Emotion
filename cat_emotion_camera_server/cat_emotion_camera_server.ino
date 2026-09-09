@@ -36,6 +36,10 @@ void connectToCloudRelay() {
     s_cloud_started = true;
 
     s_full_cloud_path = String(cloud_relay_path) + "?pin=" + String(s_session_pin);
+    if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+        s_full_cloud_path += "&ip=";
+        s_full_cloud_path += WiFi.localIP().toString();
+    }
     if (cloud_relay_token && strlen(cloud_relay_token) > 0) {
         s_full_cloud_path += "&token=";
         s_full_cloud_path += cloud_relay_token;

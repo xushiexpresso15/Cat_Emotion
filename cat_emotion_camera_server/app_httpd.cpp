@@ -416,10 +416,11 @@ void loopRemoteProxy() {
     if (now - s_last_diag_ms > 2500) {
         s_last_diag_ms = now;
         uint32_t elapsed = (g_last_frame_millis > 0) ? (now - g_last_frame_millis) : 0;
-        char diag[160];
+        char diag[200];
         snprintf(diag, sizeof(diag),
-            "{\"type\":\"diag\",\"total_frames\":%lu,\"elapsed_ms\":%lu,\"free_psram\":%lu}",
-            (unsigned long)g_total_frames, (unsigned long)elapsed, (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM)
+            "{\"type\":\"diag\",\"total_frames\":%lu,\"elapsed_ms\":%lu,\"free_psram\":%lu,\"local_ip\":\"%s\"}",
+            (unsigned long)g_total_frames, (unsigned long)elapsed, (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+            WiFi.localIP().toString().c_str()
         );
         webSocket.broadcastTXT(diag);
         if (cloudClient.isConnected()) {
