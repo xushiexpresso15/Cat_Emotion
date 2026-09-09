@@ -4,6 +4,33 @@ Production-grade firmware for the **Seeed Studio XIAO ESP32-S3** microcontroller
 
 ---
 
+## Prerequisites & Runtime Environment
+
+### Supported Operating Systems
+- **Linux**: Ubuntu 20.04 / 22.04 / 24.04 LTS, Debian 11 / 12, Fedora, Arch Linux, or compatible Linux distributions.
+- **macOS**: macOS 12 Monterey or newer (Intel / Apple Silicon).
+- **Windows**: Windows 10 / 11.
+
+### Development Toolchains & Compilers
+- **Arduino CLI**: v0.35.0 or higher (or Arduino IDE 2.x).
+- **Board Support Package**: `esp32:esp32` by Espressif Systems (version 3.0.0+ recommended).
+  - Target Board FQBN: `esp32:esp32:XIAO_ESP32S3:PSRAM=opi`
+  - Flash Size: 8 MB with Octal-SPI (OPI) PSRAM enabled.
+
+### Required Arduino Libraries
+- `Seeed_Arduino_SSCMA` (v2.0.0+) - Communication and packet parser for Seeed Grove Vision AI V2.
+- `WebSockets` (by Markus Sattler / Links2004, v2.4.0+) - WebSocket client and server implementations.
+- Built-in ESP32 core libraries: `WiFi`, `DNSServer`, `ESPmDNS`, `esp_random`.
+
+### Linux Serial Port Permissions
+To upload firmware and monitor serial output via `/dev/ttyACM*`, add your user to the `dialout` group:
+```bash
+sudo usermod -a -G dialout $USER
+# Log out and log back in for group changes to take effect
+```
+
+---
+
 ## Architecture Overview
 
 The ESP32-S3 serves as the network gateway and telemetry distributor for the entire system:
