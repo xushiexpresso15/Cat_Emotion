@@ -1,41 +1,143 @@
-# Real-Time Cat Emotion Recognition and Edge Telemetry System
+# Cat Emotion Recognition: Edge AI and Wireless Telemetry System
 
-## Abstract
-This project implements an embedded edge computing system for real-time feline facial detection and emotional state classification. The architecture couples on-device deep learning acceleration with flexible wireless telemetry. It supports autonomous field operation powered by a portable power bank without external network dependencies, while concurrently providing cloud relay broadcasting for remote multi-user observation.
+## Introduction
+Cat Emotion is an open-source embedded edge AI project designed for real-time feline facial expression detection and emotional state classification. 
 
-## System Architecture
+Traditional animal behavior monitoring systems often rely on streaming raw video to centralized servers or high-power GPUs, introducing latency, network dependency, and privacy concerns. This project shifts the entire deep learning inference workload directly onto an ultra-low-power edge processor with an on-chip microNPU, enabling fully autonomous on-device inference while simultaneously providing robust wireless telemetry.
 
-```text
-+-----------------------+      High-Speed UART (921,600)      +-------------------------+
-|  OV5647 Camera Sensor | ----------------------------------> |  Seeed Studio XIAO      |
-|  + Himax WiseEye2 NPU | <---------------------------------- |  ESP32-S3 Module        |
-|  (YOLOv8n QAT INT8)   |        Hardware Pulse Reset         |  (Dual Wi-Fi AP + STA)  |
-+-----------------------+                                     +-------------------------+
-                                                                           |
-                                             +-----------------------------+-----------------------------+
-                                             |                                                           |
-                                             v                                                           v
-                                  Local Hotspot (SoftAP)                                      Cloud WebSocket Client
-                                  SSID: Cat_Emotion_AP                                        WSS Push to Cloud Relay
-                                  Direct URL: http://192.168.4.1                              Target: Render.com Web Service
-                                             |                                                           |
-                                             v                                                           v
-                                  Field Operator Device                                       Public Audience / Evaluators
+The system is split into two coordinated hardware layers:
+1. Edge Inference Node: Seeed Studio Grove Vision AI V2 (powered by the Himax WiseEye2 processor with an Arm Cortex-M55 core and Arm Ethos-U55 microNPU) running a custom INT8 quantized YOLOv8n model at up to 13 FPS native inference throughput.
+2. Wireless Telemetry Gateway: Seeed Studio XIAO ESP32-S3 acting as a dual-band network bridge, providing an offline local web server (SoftAP) and publishing telemetry to an upstream cloud relay.
+
+## Demonstration and Deployment Modes
+The system is built to handle diverse deployment scenarios:
+- Standalone Field Mode: Powered solely by a portable 5V USB power bank. The ESP32 emits an independent Wi-Fi hotspot (`Cat_Emotion_AP`), allowing any nearby smartphone or laptop to view live bounding boxes and classifications at `http://192.168.4.1` with zero external network dependencies.
+- Cloud Broadcast Mode: The ESP32 connects to an available Wi-Fi network or smartphone hotspot and pushes telemetry via TLS WebSocket to a cloud relay server (hosted on Render), enabling distributed audiences to view the live dashboard concurrently from any browser.
+- Local Network Mode: Connects to local LAN routers, providing direct dashboard access via mDNS at `http://cat.local`.
+
+Live cloud demo: https://cat-emo-live.onrender.com
+
+## Repository Branch Structure
+This repository uses functional branches to keep build artifacts and deployment configurations modular and clean:
+- `main`: Core project documentation, integration guide, and architectural specifications.
+- `edge-model-himax`: Neural network model weights (INT8 TFLite, Vela compiled), Himax WiseEye2 firmware binaries (`output.img`), C++ firmware source modifications, and flashing scripts.
+- `esp32-firmware`: Complete Arduino firmware for the XIAO ESP32-S3, including dual AP/STA Wi-Fi handling, UART proxy, and WebSocket client.
+- `cloud-relay`: Production-ready Node.js WebSocket relay service with responsive web UI, optimized for one-click deployment on cloud platforms like Render.com.
+
+## Hardware Requirements
+- Visual Processing Unit: Seeed Studio Grove Vision AI V2 (Himax WiseEye2 HX6538, Arm Cortex-M55 @ 400 MHz + Arm Ethos-U55 microNPU).
+- Wireless Gateway: Seeed Studio XIAO ESP32-S3 (Xtensa dual-core LX7 @ 240 MHz, 8 MB OPI PSRAM).
+- Optical Sensor: OV5647 5MP Camera Module (192x192 RGB input stream).
+- Power Supply: Standard 5V USB power bank or USB-C adapter.
+
+### Pinout and Interconnects
+Connect the Grove Vision AI V2 and XIAO ESP32-S3 as follows:
+- ESP32 Pin D6 (TX) -> Himax Module Pin RX
+- ESP32 Pin D7 (RX) -> Himax Module Pin TX
+- ESP32 Pin D3 (GPIO) -> Himax Module Pin RST
+- 3.3V -> 3.3V
+- GND -> GND
+
+## Getting Started
+
+### 1. Flashing the Edge Model (Himax WiseEye2)
+Switch to the `edge-model-himax` branch:
+```bash
+git checkout edge-model-himax
+```
+Connect the Grove Vision AI V2 module to your computer via USB (typically `/dev/ttyACM1` on Linux or `COMx` on Windows) and run the flashing utility:
+```bash
+python flashing/flash_v4.py /dev/ttyACM1 921600
+```
+This writes the Vela-compiled INT8 model to flash memory address `0x00B7B000` while preserving system boot configurations.
+
+### 2. Building and Flashing the ESP32 Firmware
+Switch to the `esp32-firmware` branch:
+```bash
+git checkout esp32-firmware
+```
+Open `cat_emotion_camera_server.ino` and configure your Wi-Fi credentials and cloud relay target:
+```cpp
+// Target networks for Station mode (prioritized connection)
+const KnownNetwork known_networks[] = {
+    {"Your_Hotspot_SSID", "Your_Password"},
+    {"Home_WiFi_SSID", "Your_Password"}
+};
+
+// Cloud relay configuration
+const bool cloud_relay_enabled = true;
+const char* cloud_relay_host = "cat-emo-live.onrender.com";
+const uint16_t cloud_relay_port = 443;
+const char* cloud_relay_path = "/esp32";
+const bool cloud_relay_ssl = true;
+```
+Compile and flash using Arduino CLI:
+```bash
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi .
+arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi .
 ```
 
-## Branch Structure
-To maintain modularity and allow independent deployment of each subsystem, this repository is organized into the following specialized branches:
+### 3. Deploying the Cloud Relay Service
+Switch to the `cloud-relay` branch:
+```bash
+git checkout cloud-relay
+```
+To run the relay service locally:
+```bash
+npm install
+node server.js
+```
+To deploy on Render:
+1. Log in to dashboard.render.com and create a new Web Service.
+2. Select this repository and set the branch to `cloud-relay`.
+3. Set Language to `Node`, Build Command to `npm install`, and Start Command to `node server.js`.
+4. Choose the free plan and deploy. Render will assign you a permanent `https://<service-name>.onrender.com` URL.
 
-- `main`: Comprehensive system architecture, specifications, and integration documentation.
-- `cloud-relay`: Production-ready Node.js WebSocket relay service designed for one-click deployment on Render.com.
-- `esp32-firmware`: XIAO ESP32-S3 Arduino firmware featuring dual-mode Wi-Fi (AP + STA), UART proxy, and WebSocket client.
-- `edge-model-himax`: Optimized YOLOv8n QAT model weights (Vela INT8) and Himax WiseEye2 firmware binaries.
+## Model Details and Quantization
+- Emotional Classes:
+  - Angry: Ears pinned backwards, tense facial muscles, narrowed eyes.
+  - Focus: Pupils dilated/focused, ears erect and facing forward, intense gaze.
+  - Relax: Neutral ear posture, soft eyes, calm facial state.
+  - Scared: Flattened ears (airplane ears), wide open eyes, retracted posture.
+- Network Architecture: YOLOv8n object detection backbone with decoupled dual-tensor output heads (bounding box coordinates and emotional class logits).
+- NPU Acceleration: Standard SiLU activations were replaced with ReLU across all convolutional layers, ensuring 100% operator mapping to the Arm Ethos-U55 microNPU with zero CPU fallback.
+- Quantization Scheme: Full INT8 Quantization-Aware Training (QAT) with target score calibration.
+- SRAM Footprint: Model tensor arena fits entirely within the Himax WE2 internal SRAM (~830 KiB), eliminating external memory access overhead.
 
-## Hardware Specifications
-- Visual Processing Unit: Seeed Studio Grove Vision AI V2 (Himax WiseEye2 HX6538, Arm Cortex-M55 @ 400 MHz and Arm Ethos-U55 microNPU).
-- Optical Sensor: OV5647 5MP Camera Module (192x192 RGB input stream).
-- Telemetry Gateway: Seeed Studio XIAO ESP32-S3 (Xtensa 32-bit LX7 dual-core @ 240 MHz, 8 MB OPI PSRAM).
-- Power Supply: Standard 5V USB power bank.
+## How to Extend and Customize
+
+### 1. Training on Custom Animal Datasets
+The training and conversion pipeline can be extended to other animal emotion or behavior datasets (e.g., dogs, livestock):
+1. Annotate bounding boxes and target emotion categories in YOLO format.
+2. Train a YOLOv8n model using ReLU activations instead of SiLU.
+3. Export to TFLite INT8 with representative calibration data.
+4. Compile using the Arm Vela toolchain:
+```bash
+vela --accelerator-config ethos-u55-64 --system-config My_Sys_Cfg --memory-mode Dedicated_Sram model_int8.tflite
+```
+
+### 2. Smart Home and Automation Integration
+The ESP32 firmware broadcasts standard JSON packets containing bounding boxes and emotion states over WebSocket. You can easily integrate this into Home Assistant, Node-RED, or MQTT brokers:
+- Trigger pet-calming pheromone diffusers when continuous `Angry` or `Scared` states are detected.
+- Record pet daily mood analytics and activity heatmaps without storing invasive video streams.
+
+### 3. Power Optimization
+The XIAO ESP32-S3 supports low-power light and deep sleep modes. By utilizing the Himax hardware motion detection trigger (CDM) or external PIR sensors, the system can wake up on demand, extending battery endurance from hours to weeks on a standard Li-Po cell.
+
+## Troubleshooting
+- 0 FPS or No Video: Ensure the UART pins between ESP32 and Himax are crossed correctly (ESP32 D6 TX -> Himax RX; ESP32 D7 RX -> Himax TX) and both share a common ground reference.
+- First-Time Cloud Latency (Render Cold Start): On the Render free tier, instances spin down after 15 minutes of inactivity. When first accessed after dormancy, initial wake-up takes approximately 30-45 seconds. Subsequent connections are immediate.
+- Wi-Fi Reconnection: If moving between environments, the ESP32 automatically scans and attempts reconnection in the background every 15 seconds without blocking local frame processing.
+
+## Contribution Guidelines
+Contributions, bug reports, and suggestions are welcome.
+1. Fork the repository on GitHub.
+2. Create a feature branch branching off the relevant subsystem:
+   - For cloud/UI improvements: branch from `cloud-relay`
+   - For ESP32 gateway features: branch from `esp32-firmware`
+   - For model/Himax improvements: branch from `edge-model-himax`
+3. Commit changes with clear, formal commit messages.
+4. Open a Pull Request describing the modifications and testing steps.
 
 ## License
-MIT License
+This project is licensed under the MIT License. See the LICENSE file for details.
