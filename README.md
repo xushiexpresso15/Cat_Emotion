@@ -47,7 +47,7 @@ git checkout edge-model-himax
 ```
 Connect the Grove Vision AI V2 module to your computer via USB (typically `/dev/ttyACM1` on Linux or `COMx` on Windows) and run the flashing utility:
 ```bash
-python flashing/flash_v4.py /dev/ttyACM1 921600
+./flashing/flash_model.sh /dev/ttyACM1 921600
 ```
 This writes the Vela-compiled INT8 model to flash memory address `0x00B7B000` while preserving system boot configurations.
 
@@ -81,6 +81,12 @@ Compile and flash using Arduino CLI:
 arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi .
 arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi .
 ```
+
+#### Dynamic Boot Session PIN
+Upon every boot, the ESP32 generates a hardware-random 6-digit session PIN (e.g., `839201`):
+- Printed in the USB Serial Monitor console on boot.
+- When powered by a portable battery pack, connect your smartphone to the device's SoftAP (`Cat_Emotion_AP`) and open `http://192.168.4.1/status` to view the active PIN.
+- Viewers accessing the public cloud relay must enter this PIN on the web dashboard to unlock video frames and telemetry.
 
 ### 3. Deploying the Cloud Relay Service
 Switch to the `cloud-relay` branch:
