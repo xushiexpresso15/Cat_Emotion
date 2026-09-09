@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title> 貓咪情緒監控系統</title>
+    <style>
+        :root {
+            --bg-color: #0f0f1a;
+            --panel-bg: rgba(255, 255, 255, 0.05);
+            --border-color: rgba(255, 255, 255, 0.1);
+            --text-main: #f0f0f0;
+            --text-muted: #a0a0b0;
+            --angry: #ef4444;
+            --focus: #3b82f6;
+            --relax: #22c55e;
+            --scared: #f59e0b;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: radial-gradient(circle at center, #1a1a2e 0%, var(--bg-color) 100%);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        h1 {
+            text-align: center;
+            font-weight: 700;
+            margin: 10px 0 25px 0;
+            text-shadow: 0 0 20px rgba(255,255,255,0.25);
+            letter-spacing: 2px;
+            font-size: 1.8rem;
+        }
+
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        .glass-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 20px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        /* Left: Video Stream */
+        .video-container {
+            flex: 2;
+            min-width: 320px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+        }
+
+        .video-wrapper {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            aspect-ratio: 4/3;
+            border-radius: 14px;
+            overflow: hidden;
+            background: #000;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #videoStream {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+
+        #bboxCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .stats-bar {
+            width: 100%;
+            max-width: 640px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 15px;
+            font-size: 0.9em;
+            color: var(--text-muted);
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .refresh-btn {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid var(--border-color);
+            color: var(--text-main);
+            padding: 4px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: all 0.2s ease;
+        }
+        .refresh-btn:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        /* Right: Info Panel */
+        .info-panel {
+            flex: 1;
+            min-width: 300px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .emotion-display {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 26px 20px;
+            transition: box-shadow 0.4s ease;
+        }
+
+        .emoji {
+            font-size: 5rem;
+            margin-bottom: 8px;
+            filter: drop-shadow(0 0 12px currentColor);
+            transition: transform 0.3s ease;
+            line-height: 1;
+        }
+
+        .emotion-name {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 15px;
+            letter-spacing: 1px;
+        }
+
+        .confidence-container {
+            width: 100%;
+            background: rgba(0,0,0,0.4);
+            border-radius: 10px;
+            height: 14px;
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .confidence-bar {
+            height: 100%;
+            width: 0%;
+            border-radius: 10px;
+            transition: width 0.3s ease, background-color 0.3s ease;
+            background-color: var(--relax);
+        }
+
+        .chart-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #pieChart {
+            width: 180px;
+            height: 180px;
+        }
+
+        .history-log {
+            flex: 1;
+            max-height: 180px;
+            overflow-y: auto;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.85em;
+            padding: 10px;
+            background: rgba(0,0,0,0.25);
+            border-radius: 10px;
+        }
+        
+        .history-log div {
+            margin-bottom: 6px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding-bottom: 5px;
+            line-height: 1.4;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--angry);
+            margin-right: 8px;
+            box-shadow: 0 0 8px currentColor;
+            vertical-align: middle;
+        }
+
+        .connected {
+            background: var(--relax);
+        }
+
+        @media (max-width: 768px) {
+            body { padding: 10px; }
+            h1 { font-size: 1.4rem; }
+            .container { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+
+    <h1> 貓咪情緒監控系統</h1>
+
+    <div class="container">
+        <!-- 左側：即時影像與數據 -->
+        <div class="glass-panel video-container">
+            <div class="video-wrapper" id="videoWrapper">
+                <img id="videoStream" src="/stream" alt="影像串流加載中..." crossorigin="anonymous">
+                <canvas id="bboxCanvas"></canvas>
+            </div>
+            <div class="stats-bar">
+                <div>
+                    <span class="status-indicator" id="wsStatus"></span>
+                    <span id="wsStatusText">WebSocket 連線中...</span>
+                </div>
+                <div>
+                    串流 FPS: <span id="fpsCounter" style="color:#38bdf8;font-weight:bold;">0</span> | 
+                    延遲: <span id="latencyDisplay" style="color:#38bdf8;font-weight:bold;">0</span> ms
+                </div>
+                <button class="refresh-btn" onclick="reconnectStream()">重新整理串流</button>
+            </div>
+        </div>
+
+        <!-- 右側：情緒面板 -->
+        <div class="info-panel">
+            <div class="glass-panel emotion-display" id="emotionBox">
+                <div class="emoji" id="currentEmoji"></div>
+                <div class="emotion-name" id="currentEmotion" style="color:var(--text-muted);">搜尋貓咪中...</div>
+                <div class="confidence-container">
+                    <div class="confidence-bar" id="confBar"></div>
+                </div>
+                <div style="margin-top: 10px; font-size: 0.9em; color: var(--text-muted)">
+                    信心水準: <span id="confText" style="font-weight:bold;color:#f0f0f0;">0</span>%
+                </div>
+            </div>
+
+            <div class="glass-panel chart-container">
+                <h3 style="margin-top:0; font-weight:600; font-size:1rem; color:var(--text-muted)">情緒統計分佈</h3>
+                <canvas id="pieChart" width="180" height="180"></canvas>
+            </div>
+
+            <div class="glass-panel" style="display:flex; flex-direction:column;">
+                <h3 style="margin-top:0; font-weight:600; font-size:1rem; color:var(--text-muted)">即時偵測紀錄</h3>
+                <div class="history-log" id="historyLog">
+                    <div style="color:var(--text-muted)">等待偵測結果...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const emotionMap = {
+            'angry':  { name: '生氣', emoji: '', color: 'var(--angry)' },
+            'focus':  { name: '專注', emoji: '', color: 'var(--focus)' },
+            'relax':  { name: '放鬆', emoji: '', color: 'var(--relax)' },
+            'scared': { name: '害怕', emoji: '', color: 'var(--scared)' }
+        };
+
+        let emotionCounts = { 'angry': 0, 'focus': 0, 'relax': 0, 'scared': 0 };
+        
+        const host = window.location.hostname || '192.168.4.1';
+        const streamImg = document.getElementById('videoStream');
+        const canvas = document.getElementById('bboxCanvas');
+        const ctx = canvas.getContext('2d');
+        const videoWrapper = document.getElementById('videoWrapper');
+
+        function resizeCanvas() {
+            if (videoWrapper) {
+                canvas.width = videoWrapper.clientWidth;
+                canvas.height = videoWrapper.clientHeight;
+            }
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function reconnectStream() {
+            streamImg.src = '/stream?t=' + Date.now();
+        }
+
+        streamImg.onerror = () => {
+            console.warn("Stream error, retrying port 8080 fallback...");
+            setTimeout(() => {
+                streamImg.src = `http://${host}:8080/stream?t=` + Date.now();
+            }, 1000);
+        };
+
+        // WebSocket Setup
+        let ws;
+        let reconnectDelay = 1000;
+        let framesCount = 0;
+        let lastFpsTime = performance.now();
+        let lastBoxTime = 0;
+
+        function connectWebSocket() {
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${wsProtocol}//${host}:81/`;
+            
+            try {
+                ws = new WebSocket(wsUrl);
+            } catch(e) {
+                console.error("WS init error:", e);
+            }
+
+            ws.onopen = () => {
+                document.getElementById('wsStatus').classList.add('connected');
+                document.getElementById('wsStatusText').innerText = '串流與推論同步連線';
+                reconnectDelay = 1000;
+            };
+
+            ws.onclose = () => {
+                document.getElementById('wsStatus').classList.remove('connected');
+                document.getElementById('wsStatusText').innerText = '連線中斷，重連中...';
+                setTimeout(connectWebSocket, reconnectDelay);
+                reconnectDelay = Math.min(reconnectDelay * 1.5, 5000);
+            };
+
+            ws.onerror = (err) => {
+                console.warn("WebSocket error:", err);
+            };
+
+            ws.onmessage = (event) => {
+                const now = performance.now();
+                framesCount++;
+                if (now - lastFpsTime >= 1000) {
+                    const elapsed = (now - lastFpsTime) / 1000;
+                    document.getElementById('fpsCounter').innerText = (framesCount / elapsed).toFixed(1);
+                    framesCount = 0;
+                    lastFpsTime = now;
+                }
+
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.timestamp) {
+                        const nowMs = Date.now();
+                        const lat = Math.abs(nowMs - data.timestamp) % 500;
+                        document.getElementById('latencyDisplay').innerText = lat;
+                    }
+
+                    if (data.bbox && data.emotion && data.emotion !== 'none') {
+                        lastBoxTime = now;
+                        updateEmotionUI(data);
+                        drawBBox(data.bbox, data.emotion);
+                        updateHistory(data);
+                        updateChart(data.emotion);
+                    } else {
+                        // Clear box if no detection for > 500ms
+                        if (now - lastBoxTime > 600) {
+                            ctx.clearRect(0, 0, canvas.width, canvas.height);
+                            document.getElementById('confBar').style.width = '0%';
+                            document.getElementById('confText').innerText = '0';
+                            document.getElementById('currentEmotion').innerText = '搜尋貓咪中...';
+                            document.getElementById('currentEmotion').style.color = 'var(--text-muted)';
+                        }
+                    }
+                } catch(e) {
+                    console.error("Parse error:", e);
+                }
+            };
+        }
+
+        function updateEmotionUI(data) {
+            const em = emotionMap[data.emotion] || { name: data.emotion, emoji: '', color: '#888' };
+            const emojiEl = document.getElementById('currentEmoji');
+            const nameEl = document.getElementById('currentEmotion');
+            
+            emojiEl.innerText = em.emoji;
+            nameEl.innerText = em.name;
+            nameEl.style.color = em.color;
+            emojiEl.style.color = em.color;
+            
+            const confPercent = Math.min(100, Math.max(0, Math.round(data.confidence * 100)));
+            const confBar = document.getElementById('confBar');
+            confBar.style.width = `${confPercent}%`;
+            confBar.style.backgroundColor = em.color;
+            document.getElementById('confText').innerText = confPercent;
+            
+            document.getElementById('emotionBox').style.boxShadow = `0 8px 32px 0 ${em.color}33`;
+        }
+
+        function drawBBox(bbox, emotion) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!bbox) return;
+
+            // Camera is 320x240 native OV5647
+            const natW = streamImg.naturalWidth || 320;
+            const natH = streamImg.naturalHeight || 240;
+
+            const scaleX = canvas.width / natW;
+            const scaleY = canvas.height / natH;
+
+            const x = bbox.x * scaleX;
+            const y = bbox.y * scaleY;
+            const w = bbox.w * scaleX;
+            const h = bbox.h * scaleY;
+
+            const em = emotionMap[emotion] || { name: emotion, emoji: '', color: '#22c55e' };
+            const colorVar = em.color.match(/var\((.*?)\)/);
+            const color = colorVar ? getComputedStyle(document.documentElement).getPropertyValue(colorVar[1]).trim() : '#22c55e';
+
+            // Draw bounding box
+            ctx.save();
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 8;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x, y, w, h);
+            ctx.restore();
+            
+            // Draw label badge
+            const labelText = `${em.emoji} ${em.name}`;
+            ctx.font = 'bold 15px system-ui, sans-serif';
+            const textMetrics = ctx.measureText(labelText);
+            const badgeW = textMetrics.width + 14;
+            const badgeH = 24;
+            const badgeY = y >= badgeH + 4 ? y - badgeH - 2 : y + 2;
+
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.roundRect(x, badgeY, badgeW, badgeH, 4);
+            ctx.fill();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(labelText, x + 7, badgeY + 17);
+        }
+
+        let firstLog = true;
+        function updateHistory(data) {
+            const log = document.getElementById('historyLog');
+            if (firstLog) {
+                log.innerHTML = '';
+                firstLog = false;
+            }
+            const em = emotionMap[data.emotion] || { name: data.emotion };
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.innerHTML = `<span style="color:var(--text-muted)">[${time}]</span> 偵測到 <b style="color:${em.color}">${em.name}</b> (信心度: ${(data.confidence*100).toFixed(1)}%)`;
+            log.prepend(entry);
+            if (log.children.length > 40) {
+                log.removeChild(log.lastChild);
+            }
+        }
+
+        const pieCanvas = document.getElementById('pieChart');
+        const pieCtx = pieCanvas.getContext('2d');
+
+        function updateChart(emotion) {
+            if (emotionCounts[emotion] !== undefined) {
+                emotionCounts[emotion]++;
+            }
+            
+            const total = Object.values(emotionCounts).reduce((a, b) => a + b, 0);
+            if (total === 0) return;
+
+            pieCtx.clearRect(0, 0, pieCanvas.width, pieCanvas.height);
+            let startAngle = -Math.PI / 2;
+            const cx = pieCanvas.width / 2;
+            const cy = pieCanvas.height / 2;
+            const radius = Math.min(cx, cy) - 8;
+
+            const colors = {
+                'angry':  getComputedStyle(document.documentElement).getPropertyValue('--angry').trim(),
+                'focus':  getComputedStyle(document.documentElement).getPropertyValue('--focus').trim(),
+                'relax':  getComputedStyle(document.documentElement).getPropertyValue('--relax').trim(),
+                'scared': getComputedStyle(document.documentElement).getPropertyValue('--scared').trim()
+            };
+
+            for (const [em, count] of Object.entries(emotionCounts)) {
+                if (count === 0) continue;
+                const sliceAngle = (count / total) * 2 * Math.PI;
+                pieCtx.beginPath();
+                pieCtx.moveTo(cx, cy);
+                pieCtx.arc(cx, cy, radius, startAngle, startAngle + sliceAngle);
+                pieCtx.closePath();
+                pieCtx.fillStyle = colors[em];
+                pieCtx.fill();
+                startAngle += sliceAngle;
+            }
+            
+            // Inner circle for donut chart
+            pieCtx.beginPath();
+            pieCtx.arc(cx, cy, radius * 0.58, 0, 2 * Math.PI);
+            pieCtx.fillStyle = '#0f0f1a';
+            pieCtx.fill();
+
+            // Total count in center
+            pieCtx.fillStyle = '#f0f0f0';
+            pieCtx.font = 'bold 14px system-ui';
+            pieCtx.textAlign = 'center';
+            pieCtx.textBaseline = 'middle';
+            pieCtx.fillText(total, cx, cy);
+        }
+
+        connectWebSocket();
+    </script>
+</body>
+</html>
