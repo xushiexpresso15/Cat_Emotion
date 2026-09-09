@@ -58,9 +58,9 @@ git checkout esp32-firmware
 ```
 Copy `secrets.example.h` to create your local `secrets.h` (which is excluded from Git tracking):
 ```bash
-cp secrets.example.h secrets.h
+cp cat_emotion_camera_server/secrets.example.h cat_emotion_camera_server/secrets.h
 ```
-Configure your Wi-Fi credentials and cloud relay token in `secrets.h`:
+Configure your Wi-Fi credentials and cloud relay token in `cat_emotion_camera_server/secrets.h`:
 ```cpp
 // Target networks for Station mode (prioritized connection)
 const KnownNetwork known_networks[] = {
@@ -78,8 +78,8 @@ const char*    cloud_relay_token   = "your_stream_secret_here";
 ```
 Compile and flash using Arduino CLI:
 ```bash
-arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi .
-arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi .
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi cat_emotion_camera_server
+arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi cat_emotion_camera_server
 ```
 
 #### Dynamic Boot Session PIN
