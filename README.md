@@ -9,11 +9,40 @@ The system is split into two coordinated hardware layers:
 1. Edge Inference Node: Seeed Studio Grove Vision AI V2 (powered by the Himax WiseEye2 processor with an Arm Cortex-M55 core and Arm Ethos-U55 microNPU) running a custom INT8 quantized YOLOv8n model at up to 13 FPS native inference throughput.
 2. Wireless Telemetry Gateway: Seeed Studio XIAO ESP32-S3 acting as a dual-band network bridge, providing an offline local web server (SoftAP) and publishing telemetry to an upstream cloud relay.
 
+## System Prerequisites & Runtime Environment
+
+This project integrates edge microcontrollers, deep learning NPU compilers, a local Python hardware bridge, and a cloud telemetry relay. Below are the required environments and packages across the ecosystem:
+
+### Supported Operating Systems
+- **Linux (Recommended)**: Ubuntu 20.04 / 22.04 / 24.04 LTS, Debian 11 / 12, or compatible Linux distributions (x86_64 or aarch64).
+- **macOS**: macOS 12 Monterey or newer (Intel / Apple Silicon).
+- **Windows**: Windows 10 / 11 with WSL2 (Ubuntu 22.04 LTS environment recommended for Vela NPU compiler and serial flashing).
+
+### Core Toolchains & Runtime Requirements
+- **Python Runtime (Python 3.10+)**:
+  - Python 3.10 or 3.11 with `pip` and `virtualenv`.
+  - Required for: Arm Ethos-U Vela model compilation (`ethos-u-vela`), PyTorch/YOLO model conversion, serial flashing utilities (`xmodem`, `pyserial`), and the standalone Python web server (`Flask`, `pyserial`).
+- **Node.js Runtime (Node.js 18+ LTS)**:
+  - Node.js 18.x or 20.x LTS with `npm` (v9+).
+  - Required for: Cloud Relay service (`cloud-relay` branch) and WebSocket broadcast engine.
+- **Embedded C/C++ & Arduino Toolchain**:
+  - Arduino CLI (v0.35+) or Arduino IDE (v2.x).
+  - ESP32 Board Support Package: `esp32:esp32` by Espressif Systems (v3.0.0+ recommended).
+  - Required Arduino Libraries: `Seeed_Arduino_SSCMA`, `WebSockets` (by Markus Sattler).
+- **Linux System Packages & Serial Permissions**:
+  - Base packages: `build-essential`, `python3-dev`, `python3-pip`, `udev`.
+  - To access USB serial ports (`/dev/ttyACM*`, `/dev/ttyUSB*`) without root privileges:
+    ```bash
+    sudo usermod -a -G dialout $USER
+    # Log out and log back in for changes to take effect
+    ```
+
 ## Demonstration and Deployment Modes
 The system is built to handle diverse deployment scenarios:
 - Standalone Field Mode: Powered solely by a portable 5V USB power bank. The ESP32 emits an independent Wi-Fi hotspot (`Cat_Emotion_AP`), allowing any nearby smartphone or laptop to view live bounding boxes and classifications at `http://192.168.4.1` with zero external network dependencies.
 - Cloud Broadcast Mode: The ESP32 connects to an available Wi-Fi network or smartphone hotspot and pushes telemetry via TLS WebSocket to a cloud relay server (hosted on Render), enabling distributed audiences to view the live dashboard concurrently from any browser.
 - Local Network Mode: Connects to local LAN routers, providing direct dashboard access via mDNS at `http://cat.local`.
+- Direct USB Mode (Python Bridge): Connects Grove Vision AI V2 directly to a PC via USB Serial, running a local Flask server for desktop monitoring.
 
 Live cloud demo: https://cat-emo-live.onrender.com
 
@@ -23,6 +52,7 @@ This repository uses functional branches to keep build artifacts and deployment 
 - `edge-model-himax`: Neural network model weights (INT8 TFLite, Vela compiled), Himax WiseEye2 firmware binaries (`output.img`), C++ firmware source modifications, and flashing scripts.
 - `esp32-firmware`: Complete Arduino firmware for the XIAO ESP32-S3, including dual AP/STA Wi-Fi handling, UART proxy, and WebSocket client.
 - `cloud-relay`: Production-ready Node.js WebSocket relay service with responsive web UI, optimized for one-click deployment on cloud platforms like Render.com.
+- `webserver`: Standalone Python Flask server connecting directly to the Grove Vision AI V2 via USB Serial, providing a local PC dashboard, MJPEG stream, and REST API.
 
 ## Hardware Requirements
 - Visual Processing Unit: Seeed Studio Grove Vision AI V2 (Himax WiseEye2 HX6538, Arm Cortex-M55 @ 400 MHz + Arm Ethos-U55 microNPU).
