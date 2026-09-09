@@ -129,15 +129,102 @@ The XIAO ESP32-S3 supports low-power light and deep sleep modes. By utilizing th
 - First-Time Cloud Latency (Render Cold Start): On the Render free tier, instances spin down after 15 minutes of inactivity. When first accessed after dormancy, initial wake-up takes approximately 30-45 seconds. Subsequent connections are immediate.
 - Wi-Fi Reconnection: If moving between environments, the ESP32 automatically scans and attempts reconnection in the background every 15 seconds without blocking local frame processing.
 
-## Contribution Guidelines
-Contributions, bug reports, and suggestions are welcome.
-1. Fork the repository on GitHub.
-2. Create a feature branch branching off the relevant subsystem:
-   - For cloud/UI improvements: branch from `cloud-relay`
-   - For ESP32 gateway features: branch from `esp32-firmware`
-   - For model/Himax improvements: branch from `edge-model-himax`
-3. Commit changes with clear, formal commit messages.
-4. Open a Pull Request describing the modifications and testing steps.
+## Collaborative Workflow & Contribution Rules
+
+Whether you are an internal team member or an external open-source contributor, please follow this standardized Git workflow.
+
+### Core Policy: Always Use Feature Branches
+
+- **Direct pushes to primary branches are strictly prohibited**:
+  Never push commits directly to `main`, `cloud-relay`, `esp32-firmware`, or `edge-model-himax`. Direct pushes disrupt concurrent work and introduce merge conflicts.
+- **Every new feature or bug fix must live on its own branch**:
+  All modifications must be developed in an isolated branch and integrated into the repository exclusively through a GitHub Pull Request (PR).
+
+---
+
+### Step-by-Step Team Workflow
+
+#### 1. Synchronize the Base Branch
+Before writing any code, switch to the subsystem branch you plan to modify and pull the latest upstream changes:
+```bash
+# Example: working on ESP32 firmware features
+git checkout esp32-firmware
+git pull origin esp32-firmware
+```
+
+#### 2. Create a Dedicated Feature Branch
+Branch off the synchronized base branch using a standardized naming convention:
+- `feature/<subsystem>-<feature-description>`: For new capabilities
+- `fix/<subsystem>-<bug-description>`: For bug fixes
+- `refactor/<subsystem>-<scope>`: For code refactoring
+- `docs/<description>`: For documentation updates
+
+Examples:
+```bash
+# Branching from esp32-firmware
+git checkout -b feature/esp32-line-notify
+
+# Branching from cloud-relay
+git checkout -b feature/relay-sqlite-storage
+
+# Branching from edge-model-himax
+git checkout -b fix/himax-xmodem-timeout
+```
+
+#### 3. Commit with Clear Messages
+Make small, logical commits with descriptive messages following Conventional Commits format:
+```bash
+git add cat_emotion_camera_server.ino
+git commit -m "feat(esp32): implement line notify webhook integration"
+```
+
+#### 4. Push Feature Branch to GitHub
+Push your local branch to the remote repository:
+```bash
+git push -u origin feature/esp32-line-notify
+```
+
+#### 5. Open a Pull Request (PR)
+1. Go to the GitHub repository: https://github.com/xushiexpresso15/Cat_Emotion
+2. Click **Compare & pull request** next to your newly pushed branch.
+3. Select the correct **base branch** corresponding to your subsystem:
+   - For cloud/UI features: Base `cloud-relay`
+   - For ESP32 firmware: Base `esp32-firmware`
+   - For NPU model & Himax code: Base `edge-model-himax`
+   - For general documentation: Base `main`
+4. Provide a clear summary:
+   - What changed
+   - Why the change was made
+   - How the change was tested on physical hardware
+5. Submit the PR for maintainer code review.
+
+#### 6. Code Review & Merge
+- The repository maintainer reviews the diff, tests if necessary, and approves the PR.
+- Once merged into the base branch, delete the remote feature branch to keep the repository tidy.
+
+---
+
+### Resolving Merge Conflicts
+
+If GitHub reports that your branch cannot be automatically merged:
+```bash
+# 1. Update your local base branch
+git checkout <base-branch>
+git pull origin <base-branch>
+
+# 2. Switch to your feature branch and merge the updated base branch
+git checkout <your-feature-branch>
+git merge <base-branch>
+
+# 3. Resolve conflicts in your editor, then commit and push
+git add .
+git commit -m "chore: resolve merge conflicts with <base-branch>"
+git push origin <your-feature-branch>
+```
+
+---
 
 ## License
-This project is licensed under the MIT License. See the LICENSE file for details.
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
