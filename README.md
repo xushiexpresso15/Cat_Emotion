@@ -112,11 +112,43 @@ arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi cat_emotion_camera
 arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi cat_emotion_camera_server
 ```
 
-#### Dynamic Boot Session PIN
+#### Dynamic Boot Session PIN & Discord Telemetry
 Upon every boot, the ESP32 generates a hardware-random 6-digit session PIN (e.g., `839201`):
 - Printed in the USB Serial Monitor console on boot.
+- Dispatched automatically to your private Discord server via Webhook.
 - When powered by a portable battery pack, connect your smartphone to the device's SoftAP (`Cat_Emotion_AP`) and open `http://192.168.4.1/status` to view the active PIN.
 - Viewers accessing the public cloud relay must enter this PIN on the web dashboard to unlock video frames and telemetry.
+
+## Feline Stress Detection & Discord Webhook Integration
+
+### Ethological & Clinical Veterinary Foundations
+The stress detection algorithm is grounded in established veterinary and ethological literature:
+- **Cat Stress Score (CSS)**: [Kessler & Turner (1997), Animal Welfare, 6(3), 243-254](https://www.aspcapro.org/resource/cat-stress-score-css) established a 7-level scale (1: Fully relaxed, 2: Weakly relaxed, 3: Very weakly tense, 4: Weakly tense, 5: Moderately tense, 6: Very tense, 7: Terrified).
+- **Feline Grimace Scale (FGS)**: [Evangelista et al. (2019), Scientific Reports, 9, 19128](https://www.nature.com/articles/s41598-019-55693-8) validated facial action units for distress assessment, demonstrating that ear position (flattened / airplane ears), orbital tightening, and facial tension directly correlate with pain and stress severity.
+- **Deep Learning for FGS**: [Feighelstein et al. (2023), Scientific Reports, 13, 14227](https://www.nature.com/articles/s41598-023-41076-7) confirmed that automated neural network architectures can accurately detect facial expressions associated with feline distress.
+- **CatFACS**: [Caeiro, Burrows, & Waller (2017), Applied Animal Behaviour Science, 189, 66-78](https://www.sciencedirect.com/science/article/pii/S016815911730105X) established objective facial action coding units in domestic cats.
+
+### Temporal Feline Stress Index (TFSI) Algorithm
+Instantaneous classification alone is susceptible to brief orienting reflexes (e.g., a cat twitching an ear in response to an ambient sound). The firmware implements a temporal integration filter:
+1. **Model Class Stress Mapping**:
+   - `relax`: Weight 0.00 (CSS 1-2, calm baseline)
+   - `focus`: Weight 0.20 (CSS 3-4, mild arousal or predatory focus)
+   - `scared`: Weight 0.85 (CSS 5-6, marked fear and retraction)
+   - `angry`: Weight 1.00 (CSS 6-7, defensive aggression and acute distress)
+2. **Exponentially Weighted Moving Average (EWMA)**:
+   Smooths instantaneous stress scores over time with smoothing factor alpha = 0.22 (tau approx 4.0s at 1 FPS detection updates).
+3. **Temporal Leaky Accumulator**:
+   Distress duration accumulator increments when smoothed stress score exceeds 0.65, and decays with a leaky integrator when normal.
+4. **Trigger Criteria**:
+   Alert is triggered only when sustained distress duration is greater than or equal to 8.0s and instantaneous stress is greater than or equal to 0.65.
+5. **Rate-Limiting Cooldown**:
+   A 5-minute refractory cooldown period prevents continuous notification flooding during ongoing events.
+
+### Discord Webhook Alerts
+Notifications are dispatched via HTTPS POST to a configured Discord Webhook URL using an asynchronous FreeRTOS background task (`discordTask` running on ESP32 Core 0). This ensures network TLS latency (~1s) never blocks real-time camera inference or WebSocket streaming.
+- **Boot Telemetry Notification**: Dispatches the dynamic 6-digit session PIN, local SoftAP/Station IP addresses, and direct stream links whenever the ESP32 boots up.
+- **Stress Anomaly Alert**: Dispatches a rich Discord embed card containing the dominant stress state (`scared` or `angry`), numerical stress index percentage, sustained duration in seconds, confidence score, and direct stream URL for immediate verification.
+
 
 ### 3. Deploying the Cloud Relay Service
 Switch to the `cloud-relay` branch:
