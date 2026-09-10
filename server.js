@@ -9,7 +9,7 @@ app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT || '10000', 10);
 const STREAM_SECRET = process.env.STREAM_SECRET || null;
 const MAX_PAYLOAD = parseInt(process.env.MAX_PAYLOAD || '1048576', 10); // 1 MB limit against OOM DoS
 const MAX_VIEWERS = parseInt(process.env.MAX_VIEWERS || '50', 10); // Max concurrent viewers
