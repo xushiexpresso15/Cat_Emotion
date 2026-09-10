@@ -37,3 +37,8 @@ const bool     cloud_relay_ssl     = true;
 // Pre-shared authentication secret for the cloud relay
 // Must match STREAM_SECRET on the cloud relay server
 const char*    cloud_relay_token   = "your_stream_secret_here";
+
+// Discord Webhook Configuration (for boot PIN and stress alerts)
+// Set discord_enabled to true and paste your Discord channel webhook URL.
+const bool     discord_enabled     = false;
+const char*    discord_webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN";

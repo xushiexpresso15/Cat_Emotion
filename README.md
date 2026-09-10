@@ -118,8 +118,37 @@ const bool     cloud_relay_ssl     = true;
 
 // Pre-shared authentication token (matches STREAM_SECRET on the relay)
 const char*    cloud_relay_token   = "your_stream_secret_here";
+
+// Discord Webhook integration (boot PIN & feline stress anomaly alerts)
+const bool     discord_enabled     = true;
+const char*    discord_webhook_url = "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN";
 ```
 `cat_emotion_camera_server/secrets.h` is excluded in `.gitignore` and will never be uploaded to GitHub. If `secrets.h` is not present, the firmware falls back safely to `secrets.example.h`.
+
+---
+
+## Feline Stress Detection Algorithm & Discord Integration
+
+### Clinical Stress Modeling
+The firmware implements the **Temporal Feline Stress Index (TFSI)** grounded in validated ethological and clinical veterinary research:
+- **Cat Stress Score (CSS)** (Kessler & Turner, 1997, *Animal Welfare*): Maps behavioral states to ordinal stress rankings (1: fully relaxed to 7: terrified).
+- **Feline Grimace Scale (FGS)** (Evangelista et al., 2019, *Nature Scientific Reports*): Validates ear flattening ("airplane ears"), orbital tightening, and facial tension as primary distress indicators.
+
+### Algorithmic Parameters
+- **Class Weights**:
+  - `relax`: Weight 0.00 (CSS 1-2, non-stress baseline)
+  - `focus`: Weight 0.20 (CSS 3-4, mild vigilance / arousal)
+  - `scared`: Weight 0.85 (CSS 5-6, fear posture / retracted ears)
+  - `angry`: Weight 1.00 (CSS 6-7, defensive aggression / acute distress)
+- **Temporal EWMA & Duration Filter**:
+  Instantaneous detections are smoothed over time ($\tau = 4.0\text{s}$). An alert triggers only when the smoothed stress score $\ge 0.65$ persists continuously for $\ge 8.0\text{ seconds}$, eliminating false positives from brief orienting reactions.
+- **Anti-Spam Cooldown**:
+  A 5-minute cooldown timer prevents notification flooding.
+
+### Asynchronous Discord Notifications
+A dedicated FreeRTOS background task (`discordTask` on Core 0) handles HTTPS POST requests without blocking video ingestion or WebSocket distribution:
+1. **Boot Notification**: Automatically broadcasts the new 6-digit session PIN, local IP status link, and cloud relay URL to your Discord server upon boot.
+2. **Stress Alarm**: Dispatches rich embed alerts with stress severity index, dominant negative state, sustained duration, detection confidence, and live stream link.
 
 ---
 
@@ -130,6 +159,7 @@ Every time the ESP32 boots up, a cryptographically secure 6-digit hardware-rando
 - Visitors to the public stream must enter the PIN to unlock video streaming and telemetry.
 - The PIN is printed over the USB Serial Monitor (115200 baud).
 - Authorized local users connected to the ESP32's SoftAP (`192.168.4.1`) can view the current PIN at `http://192.168.4.1/status` or query `http://192.168.4.1/pin`.
+- When Discord alerts are enabled, the PIN is also posted directly to your Discord channel on every boot.
 
 ---
 

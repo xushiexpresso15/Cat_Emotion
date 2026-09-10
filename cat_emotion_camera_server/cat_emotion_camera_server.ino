@@ -4,6 +4,8 @@
 #include <ESPmDNS.h>
 
 #include "app_httpd.h"
+#include "stress_detector.h"
+#include "discord_alert.h"
 
 // ===========================
 // Configuration & Credentials
@@ -28,6 +30,14 @@ void loopRemoteProxy();
 
 static char s_session_pin[7] = "000000";
 static String s_full_cloud_path;
+static bool s_boot_alert_sent = false;
+
+void notifyBootToDiscord() {
+    if (s_boot_alert_sent) return;
+    if (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) return;
+    s_boot_alert_sent = true;
+    sendDiscordBootNotification(s_session_pin, WiFi.localIP().toString().c_str(), "https://cat-emo-live.onrender.com");
+}
 
 void connectToCloudRelay() {
     if (!cloud_relay_enabled) return;
@@ -66,6 +76,9 @@ void setup() {
     Serial.printf("  [SECURITY] 當次動態觀看 PIN: %s\n", s_session_pin);
     Serial.println("=========================================");
 
+    initStressDetector();
+    initDiscordAlert(discord_webhook_url, discord_enabled);
+
     // 監聽 WiFi 連線與 Station 事件
     WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
         if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
@@ -82,6 +95,7 @@ void setup() {
             Serial.printf("[WiFi STA] 成功取得 IP: %s\n", WiFi.localIP().toString().c_str());
             MDNS.begin("cat");
             connectToCloudRelay();
+            notifyBootToDiscord();
         } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
             Serial.println("[WiFi STA] 外部 Wi-Fi 已中斷連線");
         }
@@ -135,8 +149,11 @@ void setup() {
     startRemoteProxy(PROTO_UART);
     startCameraServer();
 
-    if (cloud_relay_enabled && sta_connected) {
-        connectToCloudRelay();
+    if (sta_connected) {
+        if (cloud_relay_enabled) {
+            connectToCloudRelay();
+        }
+        notifyBootToDiscord();
     }
 
     Serial.println("\n=========================================");
@@ -168,7 +185,9 @@ void loop() {
     uint32_t now = millis();
     if (now - s_last_wifi_check_ms > 15000) {
         s_last_wifi_check_ms = now;
-        if (WiFi.status() != WL_CONNECTED) {
+        if (WiFi.status() == WL_CONNECTED) {
+            notifyBootToDiscord();
+        } else {
             // 嘗試非同步重新連線優先網路（手機熱點）
             WiFi.begin(known_networks[0].ssid, known_networks[0].password);
         }

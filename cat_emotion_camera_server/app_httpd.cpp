@@ -16,6 +16,8 @@
 //
 
 #include "app_httpd.h"
+#include "stress_detector.h"
+#include "discord_alert.h"
 
 #include <ArduinoJson.h>
 #include <FreeRTOS.h>
@@ -384,10 +386,12 @@ static void proxyCallback(const char* resp, size_t len) {
                             cloudClient.sendTXT(ws_buf);
                         }
                         sent_box = true;
+                        updateStressSample(target, score / 100.0f);
                     }
                 }
             }
             if (!sent_box) {
+                updateStressSample(EMOTION_NONE, 0.0f);
                 char ws_buf[128];
                 snprintf(ws_buf, sizeof(ws_buf),
                     "{\"emotion\":\"none\",\"confidence\":0.0,\"bbox\":null,\"raw\":[],\"timestamp\":%lu}",
@@ -412,15 +416,32 @@ void loopRemoteProxy() {
     cloudClient.loop();
     AI.fetch(proxyCallback);
 
+    // Evaluate stress anomaly on each loop cycle
+    StressReport stress_rep;
+    if (evaluateStressAnomaly(&stress_rep)) {
+        Serial.printf("[STRESS ALERT] Triggered! State: %s, Score: %.2f, Duration: %.1fs\n",
+            getEmotionName(stress_rep.dominant_emotion),
+            stress_rep.stress_index,
+            stress_rep.consecutive_distress_sec
+        );
+        sendDiscordStressAlert(
+            getEmotionName(stress_rep.dominant_emotion),
+            stress_rep.stress_index,
+            stress_rep.consecutive_distress_sec,
+            stress_rep.avg_confidence,
+            "https://cat-emo-live.onrender.com"
+        );
+    }
+
     uint32_t now = millis();
     if (now - s_last_diag_ms > 2500) {
         s_last_diag_ms = now;
         uint32_t elapsed = (g_last_frame_millis > 0) ? (now - g_last_frame_millis) : 0;
-        char diag[200];
+        char diag[256];
         snprintf(diag, sizeof(diag),
-            "{\"type\":\"diag\",\"total_frames\":%lu,\"elapsed_ms\":%lu,\"free_psram\":%lu,\"local_ip\":\"%s\"}",
+            "{\"type\":\"diag\",\"total_frames\":%lu,\"elapsed_ms\":%lu,\"free_psram\":%lu,\"local_ip\":\"%s\",\"stress_score\":%.2f}",
             (unsigned long)g_total_frames, (unsigned long)elapsed, (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-            WiFi.localIP().toString().c_str()
+            WiFi.localIP().toString().c_str(), getCurrentStressScore()
         );
         webSocket.broadcastTXT(diag);
         if (cloudClient.isConnected()) {
