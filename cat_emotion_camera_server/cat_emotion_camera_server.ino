@@ -119,7 +119,11 @@ void setup() {
     bool sta_connected = false;
     for (size_t i = 0; i < NUM_KNOWN_NETWORKS; i++) {
         Serial.printf("[WiFi] 正在連線至: %s ...\n", known_networks[i].ssid);
-        WiFi.begin(known_networks[i].ssid, known_networks[i].password);
+        if (known_networks[i].password && strlen(known_networks[i].password) > 0) {
+            WiFi.begin(known_networks[i].ssid, known_networks[i].password);
+        } else {
+            WiFi.begin(known_networks[i].ssid);
+        }
         int retries = 0;
         while (WiFi.status() != WL_CONNECTED && retries < 16) {
             delay(500);
@@ -188,8 +192,15 @@ void loop() {
         if (WiFi.status() == WL_CONNECTED) {
             notifyBootToDiscord();
         } else {
-            // 嘗試非同步重新連線優先網路（手機熱點）
-            WiFi.begin(known_networks[0].ssid, known_networks[0].password);
+            // 依序嘗試非同步重新連線已知網路（輪流嘗試）
+            static size_t s_reconnect_idx = 0;
+            const KnownNetwork& net = known_networks[s_reconnect_idx % NUM_KNOWN_NETWORKS];
+            s_reconnect_idx++;
+            if (net.password && strlen(net.password) > 0) {
+                WiFi.begin(net.ssid, net.password);
+            } else {
+                WiFi.begin(net.ssid);
+            }
         }
     }
     yield();

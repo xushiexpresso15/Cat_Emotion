@@ -18,6 +18,7 @@ struct KnownNetwork {
 // List of known Wi-Fi networks (tried in order)
 const KnownNetwork known_networks[] = {
     {"YOUR_HOTSPOT_SSID", "YOUR_HOTSPOT_PASSWORD"},  // Primary (Mobile hotspot / field test)
+    {"TANetRoaming",        ""},                     // Campus Wi-Fi (Open / MAC authenticated)
     {"YOUR_WIFI_SSID",    "YOUR_WIFI_PASSWORD"}      // Secondary (Home / lab router)
 };
 const size_t NUM_KNOWN_NETWORKS = sizeof(known_networks) / sizeof(known_networks[0]);
