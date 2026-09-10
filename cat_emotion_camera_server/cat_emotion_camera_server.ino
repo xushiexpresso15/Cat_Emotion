@@ -185,21 +185,65 @@ void loop() {
     dnsServer.processNextRequest();
     loopRemoteProxy();
 
-    // 背景非同步 Wi-Fi 斷線重連檢查（每 15 秒檢查一次，不阻塞串流）
+    // 背景非同步 Wi-Fi 斷線重連與優先級搶佔檢查（每 15 秒檢查一次，不阻塞串流）
     uint32_t now = millis();
+    static uint32_t s_last_priority_check_ms = 0;
+    static int16_t s_scan_state = -1;
+
     if (now - s_last_wifi_check_ms > 15000) {
         s_last_wifi_check_ms = now;
         if (WiFi.status() == WL_CONNECTED) {
             notifyBootToDiscord();
+
+            // 如果目前連線的是最低優先級的學校網路，每 90 秒檢查是否有高優先級網路（手機熱點 / DECO）上線
+            if (WiFi.SSID() == known_networks[NUM_KNOWN_NETWORKS - 1].ssid && now - s_last_priority_check_ms > 90000) {
+                s_last_priority_check_ms = now;
+                WiFi.scanNetworks(true, false, false, 100);
+                s_scan_state = -2;
+            }
         } else {
-            // 依序嘗試非同步重新連線已知網路（輪流嘗試）
-            static size_t s_reconnect_idx = 0;
-            const KnownNetwork& net = known_networks[s_reconnect_idx % NUM_KNOWN_NETWORKS];
-            s_reconnect_idx++;
+            // 斷線時嚴格依照優先級嘗試重新連線：
+            // 手機熱點優先 2 次 -> DECO 優先 2 次 -> 都連不上才嘗試學校網路 1 次
+            static size_t s_retry_step = 0;
+            size_t target_idx = 0;
+            if (s_retry_step < 2) {
+                target_idx = 0; // 手機熱點優先
+            } else if (s_retry_step < 4) {
+                target_idx = 1; // DECO 次之
+            } else {
+                target_idx = NUM_KNOWN_NETWORKS - 1; // 學校網路最低
+            }
+            s_retry_step = (s_retry_step + 1) % 5;
+
+            const KnownNetwork& net = known_networks[target_idx];
             if (net.password && strlen(net.password) > 0) {
                 WiFi.begin(net.ssid, net.password);
             } else {
                 WiFi.begin(net.ssid);
+            }
+        }
+    }
+
+    // 處理非同步掃描結果（若發現高優先級網路已開，切換離線以便重新連線高優先級）
+    if (s_scan_state == -2) {
+        int16_t n = WiFi.scanComplete();
+        if (n >= 0) {
+            s_scan_state = -1;
+            bool found_higher_priority = false;
+            for (int i = 0; i < n; ++i) {
+                String s = WiFi.SSID(i);
+                for (size_t k = 0; k < NUM_KNOWN_NETWORKS - 1; ++k) {
+                    if (s == known_networks[k].ssid) {
+                        found_higher_priority = true;
+                        break;
+                    }
+                }
+                if (found_higher_priority) break;
+            }
+            WiFi.scanDelete();
+            if (found_higher_priority) {
+                Serial.println("[WiFi] 偵測到高優先級網路 (手機熱點/DECO) 已上線，切換連線...");
+                WiFi.disconnect();
             }
         }
     }
