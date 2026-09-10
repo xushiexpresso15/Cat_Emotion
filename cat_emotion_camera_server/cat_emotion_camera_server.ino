@@ -115,34 +115,54 @@ void setup() {
         ap_ssid, ap_ok ? "啟動成功" : "失敗", WiFi.softAPIP().toString().c_str());
     dnsServer.start(53, "*", apIP);
 
-    // 2. 嘗試依序連線已知外部 Wi-Fi (手機熱點優先)
+    // 2. 開機 5 秒快速 Wi-Fi 決策：以 1.5 秒快速掃描在場訊號，依優先級選定連線
     bool sta_connected = false;
-    for (size_t i = 0; i < NUM_KNOWN_NETWORKS; i++) {
-        Serial.printf("[WiFi] 正在連線至: %s ...\n", known_networks[i].ssid);
-        if (known_networks[i].password && strlen(known_networks[i].password) > 0) {
-            WiFi.begin(known_networks[i].ssid, known_networks[i].password);
-        } else {
-            WiFi.begin(known_networks[i].ssid);
-        }
-        int retries = 0;
-        while (WiFi.status() != WL_CONNECTED && retries < 16) {
-            delay(500);
-            Serial.print(".");
-            retries++;
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-            sta_connected = true;
-            Serial.printf("\n[WiFi] 連線成功！已連線至: %s\n", known_networks[i].ssid);
-            Serial.printf("[WiFi] 取得 IP 位址: %s\n", WiFi.localIP().toString().c_str());
-            if (MDNS.begin("cat")) {
-                Serial.println("[MDNS] 網域名稱已啟用: http://cat.local");
+    Serial.println("[WiFi] 正在快速掃描環境 Wi-Fi (5秒內選定)...");
+    int16_t num_scanned = WiFi.scanNetworks(false, false, false, 120);
+
+    int chosen_idx = -1;
+    if (num_scanned > 0) {
+        // 依優先順序 (1: 手機熱點 -> 2: DECO -> 3: 學校 TANet) 比對在場訊號
+        for (size_t p = 0; p < NUM_KNOWN_NETWORKS; p++) {
+            for (int i = 0; i < num_scanned; i++) {
+                if (WiFi.SSID(i) == known_networks[p].ssid) {
+                    chosen_idx = (int)p;
+                    break;
+                }
             }
-            break;
-        } else {
-            Serial.printf("\n[WiFi] 未連上 %s\n", known_networks[i].ssid);
-            WiFi.disconnect();
-            delay(200);
+            if (chosen_idx >= 0) break;
         }
+    }
+    WiFi.scanDelete();
+
+    // 選定要連線的目標（若未掃到已知熱點，預設嘗試第 1 順位）
+    size_t target_idx = (chosen_idx >= 0) ? (size_t)chosen_idx : 0;
+    const KnownNetwork& target_net = known_networks[target_idx];
+    Serial.printf("[WiFi] 快速選定連線至: [%s] (優先級第 %d 順位)\n", target_net.ssid, (int)target_idx + 1);
+
+    if (target_net.password && strlen(target_net.password) > 0) {
+        WiFi.begin(target_net.ssid, target_net.password);
+    } else {
+        WiFi.begin(target_net.ssid);
+    }
+
+    // 等待連線完成 (最多等待 3.5 秒，確保整體在 5 秒內完成)
+    int retries = 0;
+    while (WiFi.status() != WL_CONNECTED && retries < 7) {
+        delay(500);
+        Serial.print(".");
+        retries++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        sta_connected = true;
+        Serial.printf("\n[WiFi] 連線成功！已連線至: %s\n", target_net.ssid);
+        Serial.printf("[WiFi] 取得 IP 位址: %s\n", WiFi.localIP().toString().c_str());
+        if (MDNS.begin("cat")) {
+            Serial.println("[MDNS] 網域名稱已啟用: http://cat.local");
+        }
+    } else {
+        Serial.printf("\n[WiFi] 暫未連上 %s，維持獨立 AP 熱點並於背景重試。\n", target_net.ssid);
     }
 
     if (!sta_connected) {
@@ -185,66 +205,16 @@ void loop() {
     dnsServer.processNextRequest();
     loopRemoteProxy();
 
-    // 背景非同步 Wi-Fi 斷線重連與優先級搶佔檢查（每 15 秒檢查一次，不阻塞串流）
+    // 背景 Wi-Fi 維持檢查（每 15 秒檢查一次，不阻塞串流）
     uint32_t now = millis();
-    static uint32_t s_last_priority_check_ms = 0;
-    static int16_t s_scan_state = -1;
-
     if (now - s_last_wifi_check_ms > 15000) {
         s_last_wifi_check_ms = now;
         if (WiFi.status() == WL_CONNECTED) {
             notifyBootToDiscord();
-
-            // 如果目前連線的是最低優先級的學校網路，每 90 秒檢查是否有高優先級網路（手機熱點 / DECO）上線
-            if (WiFi.SSID() == known_networks[NUM_KNOWN_NETWORKS - 1].ssid && now - s_last_priority_check_ms > 90000) {
-                s_last_priority_check_ms = now;
-                WiFi.scanNetworks(true, false, false, 100);
-                s_scan_state = -2;
-            }
+            // 一旦選定並連上任何網路，即持續穩定運作，不做任何背景中斷或切換
         } else {
-            // 斷線時嚴格依照優先級嘗試重新連線：
-            // 手機熱點優先 2 次 -> DECO 優先 2 次 -> 都連不上才嘗試學校網路 1 次
-            static size_t s_retry_step = 0;
-            size_t target_idx = 0;
-            if (s_retry_step < 2) {
-                target_idx = 0; // 手機熱點優先
-            } else if (s_retry_step < 4) {
-                target_idx = 1; // DECO 次之
-            } else {
-                target_idx = NUM_KNOWN_NETWORKS - 1; // 學校網路最低
-            }
-            s_retry_step = (s_retry_step + 1) % 5;
-
-            const KnownNetwork& net = known_networks[target_idx];
-            if (net.password && strlen(net.password) > 0) {
-                WiFi.begin(net.ssid, net.password);
-            } else {
-                WiFi.begin(net.ssid);
-            }
-        }
-    }
-
-    // 處理非同步掃描結果（若發現高優先級網路已開，切換離線以便重新連線高優先級）
-    if (s_scan_state == -2) {
-        int16_t n = WiFi.scanComplete();
-        if (n >= 0) {
-            s_scan_state = -1;
-            bool found_higher_priority = false;
-            for (int i = 0; i < n; ++i) {
-                String s = WiFi.SSID(i);
-                for (size_t k = 0; k < NUM_KNOWN_NETWORKS - 1; ++k) {
-                    if (s == known_networks[k].ssid) {
-                        found_higher_priority = true;
-                        break;
-                    }
-                }
-                if (found_higher_priority) break;
-            }
-            WiFi.scanDelete();
-            if (found_higher_priority) {
-                Serial.println("[WiFi] 偵測到高優先級網路 (手機熱點/DECO) 已上線，切換連線...");
-                WiFi.disconnect();
-            }
+            // 僅在意外斷線時自動重新連線
+            WiFi.reconnect();
         }
     }
     yield();
