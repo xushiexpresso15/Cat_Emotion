@@ -88,8 +88,9 @@ Full INT8 quantization per-channel using a diverse calibration set of 2,400 feli
 ├── LICENSE                           # MIT License
 ├── model/
 │   ├── best.pt                       # PyTorch trained weights
-│   ├── cat_emotion_v4_calibrated_qat_int8.tflite  # Quantized TFLite model
-│   ├── cat_emotion_v4_calibrated_qat_vela.tflite  # Ethos-U55 compiled NPU model
+│   ├── cat_emotion_v8_sota_int8.tflite  # Quantized TFLite model
+│   ├── cat_emotion_v8_sota_vela.tflite  # Ethos-U55 compiled NPU model
+│   ├── cat_emotion_v8_cat_emotion_v8_sota_int8_summary_My_Sys_Cfg.csv # Vela summary
 │   └── MANIFEST.json                 # Layer-by-layer tensor shape and quantization metadata
 └── README.md                         # This documentation
 ```
@@ -113,7 +114,7 @@ Grove Vision AI V2 uses an on-board bootloader communicating via the XMODEM prot
 1. Puts the Himax chip into bootloader recovery mode via DTR/RTS serial toggling.
 2. Flashes the base firmware (`output.img`) to Flash address `0x00000000`.
 3. Sets the Vela model storage offset header to `0x00B7B000`.
-4. Streams the compiled NPU model (`cat_emotion_v4_calibrated_qat_vela.tflite`) to `0x00B7B000`.
+4. Streams the compiled NPU model (`cat_emotion_v8_sota_vela.tflite`) to `0x00B7B000`.
 5. Triggers a clean hardware reboot and verifies UART startup logs.
 
 ---

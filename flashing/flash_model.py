@@ -21,7 +21,7 @@ from pathlib import Path
 # Repo root is one level up from this script
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FW_PATH = REPO_ROOT / "firmware" / "output.img"
-MODEL_PATH = REPO_ROOT / "model" / "cat_emotion_v4_calibrated_qat_vela.tflite"
+MODEL_PATH = REPO_ROOT / "model" / "cat_emotion_v8_sota_vela.tflite"
 MODEL_ADDR = 0x00B7B000
 DEFAULT_PORT = "/dev/ttyACM0"
 DEFAULT_BAUD = 921600
