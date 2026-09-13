@@ -122,32 +122,37 @@ Upon every boot, the ESP32 generates a hardware-random 6-digit session PIN (e.g.
 ## Feline Stress Detection & Discord Webhook Integration
 
 ### Ethological & Clinical Veterinary Foundations
-The stress detection algorithm is grounded in established veterinary and ethological literature:
-- **Cat Stress Score (CSS)**: [Kessler & Turner (1997), Animal Welfare, 6(3), 243-254](https://www.aspcapro.org/resource/cat-stress-score-css) established a 7-level scale (1: Fully relaxed, 2: Weakly relaxed, 3: Very weakly tense, 4: Weakly tense, 5: Moderately tense, 6: Very tense, 7: Terrified).
-- **Feline Grimace Scale (FGS)**: [Evangelista et al. (2019), Scientific Reports, 9, 19128](https://www.nature.com/articles/s41598-019-55693-8) validated facial action units for distress assessment, demonstrating that ear position (flattened / airplane ears), orbital tightening, and facial tension directly correlate with pain and stress severity.
-- **Deep Learning for FGS**: [Feighelstein et al. (2023), Scientific Reports, 13, 14227](https://www.nature.com/articles/s41598-023-41076-7) confirmed that automated neural network architectures can accurately detect facial expressions associated with feline distress.
-- **CatFACS**: [Caeiro, Burrows, & Waller (2017), Applied Animal Behaviour Science, 189, 66-78](https://www.sciencedirect.com/science/article/pii/S016815911730105X) established objective facial action coding units in domestic cats.
+The stress detection algorithm is grounded in peer-reviewed veterinary, ethological, and affective computing literature:
+- **Cat Stress Score (CSS)**: [Kessler & Turner (1997), Animal Welfare, 6(3), 243-254](https://www.aspcapro.org/resource/cat-stress-score-css) established an ordinal 7-level scale (1: Fully relaxed, 2: Weakly relaxed, 3: Very weakly tense, 4: Weakly tense, 5: Moderately tense, 6: Very tense, 7: Terrified).
+- **Feline Grimace Scale (FGS)**: [Evangelista et al. (2019), Nature Scientific Reports, 9, 19128](https://www.nature.com/articles/s41598-019-55693-8) validated facial action units for distress assessment, demonstrating that ear position (flattened / airplane ears), orbital tightening, and facial tension directly correlate with pain and stress severity.
+- **Deep Learning for FGS**: [Feighelstein et al. (2023), Nature Scientific Reports, 13, 14227](https://www.nature.com/articles/s41598-023-41076-7) confirmed that automated neural network architectures can accurately detect facial expressions associated with feline distress through temporal spatial bounding box aggregation.
+- **CatFACS**: [Caeiro, Burrows, & Waller (2017), Applied Animal Behaviour Science, 189, 66-78](https://www.sciencedirect.com/science/article/pii/S016815911730105X) established objective facial action coding units in domestic cats (e.g., AU105 ear rotator down, AU43 orbital squint).
+- **Environmental Stress Dynamics**: [Stella, Croney, & Buffington (2013), Journal of Feline Medicine and Surgery, 15(7), 578-586](https://journals.sagepub.com/doi/10.1177/1098612X13489215) demonstrated how acute external stressors induce physiological distress surges and behavioral inhibition.
+- **Distress Escalation & Vocalization**: [Yeon et al. (2002), Applied Animal Behaviour Science, 77(3), 209-221](https://www.sciencedirect.com/science/article/pii/S016815910200030X) characterized sustained agonistic postures and autonomic sympathetic activation beyond transient orientation reflexes.
 
 ### Temporal Feline Stress Index (TFSI) Algorithm
-Instantaneous classification alone is susceptible to brief orienting reflexes (e.g., a cat twitching an ear in response to an ambient sound). The firmware implements a temporal integration filter:
+Instantaneous classification alone is susceptible to brief orienting reflexes (e.g., a cat twitching an ear in response to an ambient sound). The firmware implements a multi-stage temporal integration engine:
 1. **Model Class Stress Mapping**:
    - `relax`: Weight 0.00 (CSS 1-2, calm baseline)
-   - `focus`: Weight 0.20 (CSS 3-4, mild arousal or predatory focus)
-   - `scared`: Weight 0.85 (CSS 5-6, marked fear and retraction)
+   - `focus`: Weight 0.15 (CSS 3-4, mild curiosity or predatory focus)
+   - `scared`: Weight 0.85 (CSS 5-6, marked fear and retracted ears)
    - `angry`: Weight 1.00 (CSS 6-7, defensive aggression and acute distress)
 2. **Exponentially Weighted Moving Average (EWMA)**:
-   Smooths instantaneous stress scores over time with smoothing factor alpha = 0.22 (tau approx 4.0s at 1 FPS detection updates).
-3. **Temporal Leaky Accumulator**:
-   Distress duration accumulator increments when smoothed stress score exceeds 0.65, and decays with a leaky integrator when normal.
-4. **Trigger Criteria**:
-   Alert is triggered only when sustained distress duration is greater than or equal to 8.0s and instantaneous stress is greater than or equal to 0.65.
+   Smooths instantaneous stress scores over time with continuous time constant $\tau = 3.5\text{s}$ ($\alpha = \frac{\Delta t}{\tau + \Delta t}$).
+3. **Acute Surge Acceleration**:
+   When distress detection confidence exceeds $0.80$, an acute acceleration multiplier ($1.0\times$ to $1.4\times$) accelerates the duration accumulator, rapidly capturing severe panic events (Stella et al., 2013).
+4. **Dual-Threshold Schmitt Trigger (Hysteresis)**:
+   - Alert trigger: Smoothed stress index $\ge 0.65$ sustained continuously for $\ge 7.0\text{ seconds}$.
+   - De-escalation reset: Smoothed index $\le 0.35$. Prevents alert bouncing during boundary transitions.
 5. **Rate-Limiting Cooldown**:
    A 5-minute refractory cooldown period prevents continuous notification flooding during ongoing events.
+6. **24/7 Autonomous Monitoring**:
+   Inference parsing and stress scoring operate autonomously on every frame regardless of whether a web client is active.
 
-### Discord Webhook Alerts
-Notifications are dispatched via HTTPS POST to a configured Discord Webhook URL using an asynchronous FreeRTOS background task (`discordTask` running on ESP32 Core 0). This ensures network TLS latency (~1s) never blocks real-time camera inference or WebSocket streaming.
+### Asynchronous Discord Alerts with On-Device Annotated Snapshots
+Notifications are dispatched via HTTPS POST to a configured Discord Webhook URL using an asynchronous FreeRTOS background task (`discordTask` on ESP32 Core 0). This guarantees that network TLS latency and image processing never stall real-time camera inference or drop WebSocket frames.
 - **Boot Telemetry Notification**: Dispatches the dynamic 6-digit session PIN, local SoftAP/Station IP addresses, and direct stream links whenever the ESP32 boots up.
-- **Stress Anomaly Alert**: Dispatches a rich Discord embed card containing the dominant stress state (`scared` or `angry`), numerical stress index percentage, sustained duration in seconds, confidence score, and direct stream URL for immediate verification.
+- **Stress Anomaly Alert with Annotated Snapshot**: When acute distress is triggered, the ESP32 captures the exact camera frame, decodes the JPEG to RGB888 in 8MB Octal PSRAM, draws a 3-pixel thick bounding box outline with an emotion badge (`SCARED 92%` or `ANGRY 88%`) using a 5x7 ASCII font, recompresses to JPEG, and dispatches a `multipart/form-data` upload with a rich embed card containing the snapshot, CSS score, duration, confidence, and literature references directly to your Discord channel.
 
 
 ### 3. Deploying the Cloud Relay Service
