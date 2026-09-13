@@ -309,10 +309,10 @@ enum DiscordEventType {
 
 struct DiscordTaskMessage {
     DiscordEventType type;
-    char       param1[64]; // pin or emotion
-    char       param2[32]; // local_ip or duration
-    char       param3[32]; // stream_url or stress_index
-    char       param4[16]; // confidence
+    char       param1[64];  // pin or emotion
+    char       param2[64];  // local_ip or duration
+    char       param3[128]; // stream_url or stress_index
+    char       param4[32];  // confidence
     int        css_level;
     uint8_t*   jpeg_data;
     size_t     jpeg_len;
