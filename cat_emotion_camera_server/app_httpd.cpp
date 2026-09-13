@@ -243,6 +243,11 @@ inline uint16_t getCmdType(const char* resp, size_t len) {
     return type;
 }
 
+static uint8_t*   s_latest_jpeg_buf = NULL;
+static size_t     s_latest_jpeg_len = 0;
+static BBoxCoords s_latest_bbox = {0, 0, 0, 0, -1, 0.0f};
+static bool       s_has_latest_bbox = false;
+
 static void proxyCallback(const char* resp, size_t len) {
     static timeval timestamp;
     TickType_t     ticks = xTaskGetTickCount();
@@ -314,90 +319,108 @@ static void proxyCallback(const char* resp, size_t len) {
         g_total_frames = frame_count;
         g_last_frame_bytes = len;
         g_last_frame_millis = millis();
-        // Fast broadcast real-time JPEG binary directly to WebSocket clients
-        if (webSocket.connectedClients() > 0 || cloudClient.isConnected()) {
-            const char* slice = strnstr(resp, MSG_IMAGE_KEY MSG_QUOTE_STR, len);
-            if (slice != NULL) {
-                size_t offset = (slice - resp) + strlen(MSG_IMAGE_KEY MSG_QUOTE_STR);
-                const char* data = resp + offset;
-                const char* quote = strnstr(data, MSG_QUOTE_STR, len - offset);
-                if (quote != NULL) {
-                    size_t img_len = quote - data;
-                    if (img_len > 0) {
-                        static uint8_t* ws_jpeg_buf = NULL;
-                        if (ws_jpeg_buf == NULL) {
-                            ws_jpeg_buf = (uint8_t*)heap_caps_malloc(JPG_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                            if (ws_jpeg_buf == NULL) {
-                                ws_jpeg_buf = (uint8_t*)malloc(JPG_BUFFER_SIZE);
-                            }
+
+        // 1. Decode JPEG binary
+        const char* slice = strnstr(resp, MSG_IMAGE_KEY MSG_QUOTE_STR, len);
+        if (slice != NULL) {
+            size_t offset = (slice - resp) + strlen(MSG_IMAGE_KEY MSG_QUOTE_STR);
+            const char* data = resp + offset;
+            const char* quote = strnstr(data, MSG_QUOTE_STR, len - offset);
+            if (quote != NULL) {
+                size_t img_len = quote - data;
+                if (img_len > 0) {
+                    if (s_latest_jpeg_buf == NULL) {
+                        s_latest_jpeg_buf = (uint8_t*)heap_caps_malloc(JPG_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                        if (s_latest_jpeg_buf == NULL) {
+                            s_latest_jpeg_buf = (uint8_t*)malloc(JPG_BUFFER_SIZE);
                         }
-                        if (ws_jpeg_buf != NULL) {
-                            size_t ws_jpeg_size = 0;
-                            if (mbedtls_base64_decode(
-                                  ws_jpeg_buf, JPG_BUFFER_SIZE, &ws_jpeg_size, (const unsigned char*)data, img_len) == 0) {
-                                for (size_t i = 0; i + 1 < ws_jpeg_size; ++i) {
-                                    if (ws_jpeg_buf[i] == 0xFF && ws_jpeg_buf[i + 1] == 0xD9) {
-                                        ws_jpeg_size = i + 2;
-                                        break;
-                                    }
+                    }
+                    if (s_latest_jpeg_buf != NULL) {
+                        size_t ws_jpeg_size = 0;
+                        if (mbedtls_base64_decode(
+                              s_latest_jpeg_buf, JPG_BUFFER_SIZE, &ws_jpeg_size, (const unsigned char*)data, img_len) == 0) {
+                            for (size_t i = 0; i + 1 < ws_jpeg_size; ++i) {
+                                if (s_latest_jpeg_buf[i] == 0xFF && s_latest_jpeg_buf[i + 1] == 0xD9) {
+                                    ws_jpeg_size = i + 2;
+                                    break;
                                 }
-                                webSocket.broadcastBIN((const uint8_t*)ws_jpeg_buf, ws_jpeg_size);
-                                if (cloudClient.isConnected()) {
-                                    cloudClient.sendBIN((const uint8_t*)ws_jpeg_buf, ws_jpeg_size);
-                                }
+                            }
+                            s_latest_jpeg_len = ws_jpeg_size;
+
+                            // Broadcast real-time binary to connected WebSockets
+                            if (webSocket.connectedClients() > 0) {
+                                webSocket.broadcastBIN((const uint8_t*)s_latest_jpeg_buf, ws_jpeg_size);
+                            }
+                            if (cloudClient.isConnected()) {
+                                cloudClient.sendBIN((const uint8_t*)s_latest_jpeg_buf, ws_jpeg_size);
                             }
                         }
                     }
                 }
             }
+        }
 
-            // Fast broadcast emotion & box metadata to WebSocket clients
-            const char* b = strnstr(resp, "\"boxes\":", len);
-            bool sent_box = false;
-            if (b != NULL) {
-                const char* b_open = strchr(b, '[');
-                if (b_open != NULL && b_open[1] == '[') {
-                    int cx = 0, cy = 0, cw = 0, ch = 0, score = 0, target = -1;
-                    if (sscanf(b_open + 2, "%d,%d,%d,%d,%d,%d", &cx, &cy, &cw, &ch, &score, &target) >= 6) {
-                        int x = cx - cw / 2;
-                        int y = cy - ch / 2;
-                        if (x < 0) x = 0;
-                        if (y < 0) y = 0;
-                        const char* emotion_names[] = {"angry", "focus", "relax", "scared"};
-                        const char* emotion = (target >= 0 && target < 4) ? emotion_names[target] : "relax";
+        // 2. Parse bounding boxes & emotion detection (24/7 autonomous monitoring)
+        const char* b = strnstr(resp, "\"boxes\":", len);
+        bool sent_box = false;
+        if (b != NULL) {
+            const char* b_open = strchr(b, '[');
+            if (b_open != NULL && b_open[1] == '[') {
+                int cx = 0, cy = 0, cw = 0, ch = 0, score = 0, target = -1;
+                if (sscanf(b_open + 2, "%d,%d,%d,%d,%d,%d", &cx, &cy, &cw, &ch, &score, &target) >= 6) {
+                    int x = cx - cw / 2;
+                    int y = cy - ch / 2;
+                    if (x < 0) x = 0;
+                    if (y < 0) y = 0;
+                    const char* emotion_names[] = {"angry", "focus", "relax", "scared"};
+                    const char* emotion = (target >= 0 && target < 4) ? emotion_names[target] : "relax";
 
-                        char raw_boxes[128];
-                        const char* b_close = strstr(b_open, "]]");
-                        if (b_close != NULL && (size_t)(b_close + 2 - b_open) < sizeof(raw_boxes)) {
-                            size_t raw_len = (b_close + 2) - b_open;
-                            memcpy(raw_boxes, b_open, raw_len);
-                            raw_boxes[raw_len] = '\0';
-                        } else {
-                            snprintf(raw_boxes, sizeof(raw_boxes), "[[%d,%d,%d,%d,%d,%d]]", cx, cy, cw, ch, score, target);
-                        }
+                    s_latest_bbox.x = x;
+                    s_latest_bbox.y = y;
+                    s_latest_bbox.w = cw;
+                    s_latest_bbox.h = ch;
+                    s_latest_bbox.target = target;
+                    s_latest_bbox.confidence = score / 100.0f;
+                    s_has_latest_bbox = true;
 
-                        char ws_buf[320];
-                        snprintf(ws_buf, sizeof(ws_buf),
-                            "{\"emotion\":\"%s\",\"confidence\":%.2f,\"bbox\":{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d},\"raw\":%s,\"timestamp\":%lu}",
-                            emotion, score / 100.0f, x, y, cw, ch, raw_boxes, (unsigned long)millis()
-                        );
+                    char raw_boxes[128];
+                    const char* b_close = strstr(b_open, "]]");
+                    if (b_close != NULL && (size_t)(b_close + 2 - b_open) < sizeof(raw_boxes)) {
+                        size_t raw_len = (b_close + 2) - b_open;
+                        memcpy(raw_boxes, b_open, raw_len);
+                        raw_boxes[raw_len] = '\0';
+                    } else {
+                        snprintf(raw_boxes, sizeof(raw_boxes), "[[%d,%d,%d,%d,%d,%d]]", cx, cy, cw, ch, score, target);
+                    }
+
+                    char ws_buf[320];
+                    snprintf(ws_buf, sizeof(ws_buf),
+                        "{\"emotion\":\"%s\",\"confidence\":%.2f,\"bbox\":{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d},\"raw\":%s,\"timestamp\":%lu}",
+                        emotion, score / 100.0f, x, y, cw, ch, raw_boxes, (unsigned long)millis()
+                    );
+                    if (webSocket.connectedClients() > 0) {
                         webSocket.broadcastTXT(ws_buf);
-                        if (cloudClient.isConnected()) {
-                            cloudClient.sendTXT(ws_buf);
-                        }
-                        sent_box = true;
-                        updateStressSample(target, score / 100.0f);
                     }
+                    if (cloudClient.isConnected()) {
+                        cloudClient.sendTXT(ws_buf);
+                    }
+                    sent_box = true;
+                    updateStressSample(target, score / 100.0f);
                 }
             }
-            if (!sent_box) {
-                updateStressSample(EMOTION_NONE, 0.0f);
+        }
+        if (!sent_box) {
+            s_has_latest_bbox = false;
+            updateStressSample(EMOTION_NONE, 0.0f);
+            if (webSocket.connectedClients() > 0 || cloudClient.isConnected()) {
                 char ws_buf[128];
                 snprintf(ws_buf, sizeof(ws_buf),
                     "{\"emotion\":\"none\",\"confidence\":0.0,\"bbox\":null,\"raw\":[],\"timestamp\":%lu}",
                     (unsigned long)millis()
                 );
-                webSocket.broadcastTXT(ws_buf);
+                if (webSocket.connectedClients() > 0) {
+                    webSocket.broadcastTXT(ws_buf);
+                }
                 if (cloudClient.isConnected()) {
                     cloudClient.sendTXT(ws_buf);
                 }
@@ -419,8 +442,9 @@ void loopRemoteProxy() {
     // Evaluate stress anomaly on each loop cycle
     StressReport stress_rep;
     if (evaluateStressAnomaly(&stress_rep)) {
-        Serial.printf("[STRESS ALERT] Triggered! State: %s, Score: %.2f, Duration: %.1fs\n",
+        Serial.printf("[STRESS ALERT] Triggered! State: %s, CSS: %d, Score: %.2f, Duration: %.1fs\n",
             getEmotionName(stress_rep.dominant_emotion),
+            stress_rep.css_level,
             stress_rep.stress_index,
             stress_rep.consecutive_distress_sec
         );
@@ -429,7 +453,11 @@ void loopRemoteProxy() {
             stress_rep.stress_index,
             stress_rep.consecutive_distress_sec,
             stress_rep.avg_confidence,
-            "https://cat-emo-live.onrender.com"
+            stress_rep.css_level,
+            "https://cat-emo-live.onrender.com",
+            s_latest_jpeg_buf,
+            s_latest_jpeg_len,
+            s_has_latest_bbox ? &s_latest_bbox : nullptr
         );
     }
 
@@ -437,11 +465,11 @@ void loopRemoteProxy() {
     if (now - s_last_diag_ms > 2500) {
         s_last_diag_ms = now;
         uint32_t elapsed = (g_last_frame_millis > 0) ? (now - g_last_frame_millis) : 0;
-        char diag[256];
+        char diag[288];
         snprintf(diag, sizeof(diag),
-            "{\"type\":\"diag\",\"total_frames\":%lu,\"elapsed_ms\":%lu,\"free_psram\":%lu,\"local_ip\":\"%s\",\"stress_score\":%.2f}",
+            "{\"type\":\"diag\",\"total_frames\":%lu,\"elapsed_ms\":%lu,\"free_psram\":%lu,\"local_ip\":\"%s\",\"stress_score\":%.2f,\"css_level\":%d}",
             (unsigned long)g_total_frames, (unsigned long)elapsed, (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-            WiFi.localIP().toString().c_str(), getCurrentStressScore()
+            WiFi.localIP().toString().c_str(), getCurrentStressScore(), getEstimatedCSSLevel()
         );
         webSocket.broadcastTXT(diag);
         if (cloudClient.isConnected()) {
@@ -449,6 +477,7 @@ void loopRemoteProxy() {
         }
     }
 }
+
 
 typedef struct {
     httpd_req_t* req;
