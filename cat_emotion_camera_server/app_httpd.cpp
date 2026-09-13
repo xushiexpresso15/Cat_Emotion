@@ -1251,7 +1251,7 @@ static esp_err_t test_alert_handler(httpd_req_t* req) {
     sendDiscordStressAlert(
         "Angry",
         0.88f,
-        3.5f,
+        6.5f,
         0.92f,
         6,
         "https://cat-emo-live.onrender.com",
