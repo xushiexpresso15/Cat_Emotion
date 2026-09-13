@@ -6,7 +6,7 @@ Cat Emotion is an open-source embedded edge AI project designed for real-time fe
 Traditional animal behavior monitoring systems often rely on streaming raw video to centralized servers or high-power GPUs, introducing latency, network dependency, and privacy concerns. This project shifts the entire deep learning inference workload directly onto an ultra-low-power edge processor with an on-chip microNPU, enabling fully autonomous on-device inference while simultaneously providing robust wireless telemetry.
 
 The system is split into two coordinated hardware layers:
-1. Edge Inference Node: Seeed Studio Grove Vision AI V2 (powered by the Himax WiseEye2 processor with an Arm Cortex-M55 core and Arm Ethos-U55 microNPU) running a custom INT8 quantized YOLOv8n model at up to 13 FPS native inference throughput.
+1. Edge Inference Node: Seeed Studio Grove Vision AI V2 (powered by the Himax WiseEye2 processor with an Arm Cortex-M55 core and Arm Ethos-U55 microNPU) running a custom INT8 quantized YOLOv8n V8 SOTA model (calibrated QAT) at up to 20+ FPS native inference throughput.
 2. Wireless Telemetry Gateway: Seeed Studio XIAO ESP32-S3 acting as a dual-band network bridge, providing an offline local web server (SoftAP) and publishing telemetry to an upstream cloud relay.
 
 ## System Prerequisites & Runtime Environment
@@ -142,17 +142,18 @@ Instantaneous classification alone is susceptible to brief orienting reflexes (e
 3. **Acute Surge Acceleration**:
    When distress detection confidence exceeds $0.80$, an acute acceleration multiplier ($1.0\times$ to $1.4\times$) accelerates the duration accumulator, rapidly capturing severe panic events (Stella et al., 2013).
 4. **Dual-Threshold Schmitt Trigger (Hysteresis)**:
-   - Alert trigger: Smoothed stress index $\ge 0.65$ sustained continuously for $\ge 7.0\text{ seconds}$.
-   - De-escalation reset: Smoothed index $\le 0.35$. Prevents alert bouncing during boundary transitions.
+   - Alert trigger: Smoothed stress index $\ge 0.55$ (Kessler & Turner CSS Level 5 entry) sustained continuously for $\ge 6.0\text{ seconds}$ (distinguishes authentic distress from transient startle reflexes $<2\text{s}$; Stella et al., 2013).
+   - De-escalation reset: Smoothed index $\le 0.30$ (CSS Level 2 calm baseline). Prevents alert bouncing during boundary transitions.
 5. **Rate-Limiting Cooldown**:
-   A 5-minute refractory cooldown period prevents continuous notification flooding during ongoing events.
-6. **24/7 Autonomous Monitoring**:
-   Inference parsing and stress scoring operate autonomously on every frame regardless of whether a web client is active.
+   - A 60-second refractory cooldown period balances event responsiveness with Discord rate-limiting protection.
+6. **24/7 Autonomous Monitoring & Health Watchdog**:
+   - Inference parsing and stress scoring operate autonomously on every frame.
+   - Built-in hardware watchdog and heap protection prevent memory exhaustion, ensuring rock-solid continuous uptime.
 
 ### Asynchronous Discord Alerts with On-Device Annotated Snapshots
 Notifications are dispatched via HTTPS POST to a configured Discord Webhook URL using an asynchronous FreeRTOS background task (`discordTask` on ESP32 Core 0). This guarantees that network TLS latency and image processing never stall real-time camera inference or drop WebSocket frames.
 - **Boot Telemetry Notification**: Dispatches the dynamic 6-digit session PIN, local SoftAP/Station IP addresses, and direct stream links whenever the ESP32 boots up.
-- **Stress Anomaly Alert with Annotated Snapshot**: When acute distress is triggered, the ESP32 captures the exact camera frame, decodes the JPEG to RGB888 in 8MB Octal PSRAM, draws a 3-pixel thick bounding box outline with an emotion badge (`SCARED 92%` or `ANGRY 88%`) using a 5x7 ASCII font, recompresses to JPEG, and dispatches a `multipart/form-data` upload with a rich embed card containing the snapshot, CSS score, duration, confidence, and literature references directly to your Discord channel.
+- **Stress Anomaly Alert with Annotated Snapshot**: When acute distress is triggered, the ESP32 captures the exact camera frame, decodes the JPEG to RGB888 in 8MB Octal PSRAM, draws a 3-pixel thick high-contrast bounding box outline with an emotion badge (`SCARED 92%` or `ANGRY 88%`), recompresses to JPEG, and dispatches a concise English multipart message (Current Cat Status, Duration, Confidence, Live Stream URL, and snapshot attachment) directly to your Discord channel.
 
 
 ### 3. Deploying the Cloud Relay Service
