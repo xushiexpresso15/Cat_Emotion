@@ -476,13 +476,13 @@ static void discordWorkerTask(void* param) {
 
                 const char* state_display = msg.param1;
                 if (strcasecmp(msg.param1, "Scared") == 0) {
-                    state_display = "害怕 (Scared)";
+                    state_display = "Scared";
                 } else if (strcasecmp(msg.param1, "Angry") == 0) {
-                    state_display = "生氣 (Angry)";
+                    state_display = "Angry";
                 } else if (strcasecmp(msg.param1, "Focus") == 0) {
-                    state_display = "專注 (Focus)";
+                    state_display = "Focus";
                 } else if (strcasecmp(msg.param1, "Relax") == 0) {
-                    state_display = "放鬆 (Relax)";
+                    state_display = "Relax";
                 }
 
                 uint8_t* final_jpeg = msg.jpeg_data;
@@ -510,14 +510,14 @@ static void discordWorkerTask(void* param) {
                         "{"
                         "\"username\":\"Cat Emotion Gateway\","
                         "\"embeds\":[{"
-                            "\"title\":\"[ALERT] 貓咪狀態警報\","
-                            "\"description\":\"偵測到貓咪處於緊張或不安狀態，請留意現場狀況。\","
+                            "\"title\":\"[ALERT] Cat Status Alert\","
+                            "\"description\":\"Detected cat in distress or high-stress state. Please check the environment.\","
                             "\"color\":%d,"
                             "\"fields\":["
-                                "{\"name\":\"貓咪當前狀態\",\"value\":\"**%s**\",\"inline\":true},"
-                                "{\"name\":\"持續時間\",\"value\":\"%s 秒\",\"inline\":true},"
-                                "{\"name\":\"辨識信心度\",\"value\":\"%s%%\",\"inline\":true},"
-                                "{\"name\":\"即時影像監看\",\"value\":\"https://cat-emo-live.onrender.com\",\"inline\":false}"
+                                "{\"name\":\"Current Cat Status\",\"value\":\"**%s**\",\"inline\":true},"
+                                "{\"name\":\"Duration\",\"value\":\"%s s\",\"inline\":true},"
+                                "{\"name\":\"Confidence\",\"value\":\"%s%%\",\"inline\":true},"
+                                "{\"name\":\"Live Stream URL\",\"value\":\"https://cat-emo-live.onrender.com\",\"inline\":false}"
                             "],"
                             "\"image\":{\"url\":\"attachment://snapshot.jpg\"},"
                             "\"footer\":{\"text\":\"Cat Emotion Monitoring\"}"
@@ -531,14 +531,14 @@ static void discordWorkerTask(void* param) {
                         "{"
                         "\"username\":\"Cat Emotion Gateway\","
                         "\"embeds\":[{"
-                            "\"title\":\"[ALERT] 貓咪狀態警報\","
-                            "\"description\":\"偵測到貓咪處於緊張或不安狀態，請留意現場狀況。\","
+                            "\"title\":\"[ALERT] Cat Status Alert\","
+                            "\"description\":\"Detected cat in distress or high-stress state. Please check the environment.\","
                             "\"color\":%d,"
                             "\"fields\":["
-                                "{\"name\":\"貓咪當前狀態\",\"value\":\"**%s**\",\"inline\":true},"
-                                "{\"name\":\"持續時間\",\"value\":\"%s 秒\",\"inline\":true},"
-                                "{\"name\":\"辨識信心度\",\"value\":\"%s%%\",\"inline\":true},"
-                                "{\"name\":\"即時影像監看\",\"value\":\"https://cat-emo-live.onrender.com\",\"inline\":false}"
+                                "{\"name\":\"Current Cat Status\",\"value\":\"**%s**\",\"inline\":true},"
+                                "{\"name\":\"Duration\",\"value\":\"%s s\",\"inline\":true},"
+                                "{\"name\":\"Confidence\",\"value\":\"%s%%\",\"inline\":true},"
+                                "{\"name\":\"Live Stream URL\",\"value\":\"https://cat-emo-live.onrender.com\",\"inline\":false}"
                             "],"
                             "\"footer\":{\"text\":\"Cat Emotion Monitoring\"}"
                         "}]"
