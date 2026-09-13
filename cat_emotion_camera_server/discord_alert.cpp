@@ -465,7 +465,7 @@ static void discordWorkerTask(void* param) {
                             "{\"name\":\"Local Status URL\",\"value\":\"http://%s/status\",\"inline\":true},"
                             "{\"name\":\"Cloud Live Stream\",\"value\":\"%s\",\"inline\":false}"
                         "],"
-                        "\"footer\":{\"text\":\"Cat Emotion Monitoring System (ESP32-S3 Edge AI)\"}"
+                        "\"footer\":{\"text\":\"Cat Emotion Monitoring\"}"
                     "}]"
                     "}",
                     msg.param1, msg.param2, msg.param3
@@ -474,13 +474,15 @@ static void discordWorkerTask(void* param) {
             } else if (msg.type == DISCORD_EVENT_STRESS) {
                 int embed_color = (strcasecmp(msg.param1, "Angry") == 0) ? 15158332 : 15105570;
 
-                const char* css_desc = "CSS Level 6: Distressed / Scared";
-                switch (msg.css_level) {
-                    case 4: css_desc = "CSS Level 4: Very Tense"; break;
-                    case 5: css_desc = "CSS Level 5: Anxious (High Vigilance)"; break;
-                    case 6: css_desc = "CSS Level 6: Distressed / Scared"; break;
-                    case 7: css_desc = "CSS Level 7: Terrified / Agonistic Defense"; break;
-                    default: css_desc = "CSS Level 5-6 (Acute Distress)"; break;
+                const char* state_display = msg.param1;
+                if (strcasecmp(msg.param1, "Scared") == 0) {
+                    state_display = "害怕 (Scared)";
+                } else if (strcasecmp(msg.param1, "Angry") == 0) {
+                    state_display = "生氣 (Angry)";
+                } else if (strcasecmp(msg.param1, "Focus") == 0) {
+                    state_display = "專注 (Focus)";
+                } else if (strcasecmp(msg.param1, "Relax") == 0) {
+                    state_display = "放鬆 (Relax)";
                 }
 
                 uint8_t* final_jpeg = msg.jpeg_data;
@@ -508,25 +510,20 @@ static void discordWorkerTask(void* param) {
                         "{"
                         "\"username\":\"Cat Emotion Gateway\","
                         "\"embeds\":[{"
-                            "\"title\":\"[ALERT] Feline High Stress Anomaly Detected\","
-                            "\"description\":\"Prolonged distress posture detected exceeding the Cat Stress Score (CSS) threshold.\","
+                            "\"title\":\"[ALERT] 貓咪狀態警報\","
+                            "\"description\":\"偵測到貓咪處於緊張或不安狀態，請留意現場狀況。\","
                             "\"color\":%d,"
                             "\"fields\":["
-                                "{\"name\":\"Dominant State\",\"value\":\"**%s**\",\"inline\":true},"
-                                "{\"name\":\"CSS Assessment\",\"value\":\"`%s`\",\"inline\":true},"
-                                "{\"name\":\"Stress Index\",\"value\":\"%s%%\",\"inline\":true},"
-                                "{\"name\":\"Sustained Duration\",\"value\":\"%ss\",\"inline\":true},"
-                                "{\"name\":\"Model Confidence\",\"value\":\"%s%%\",\"inline\":true},"
-                                "{\"name\":\"Facial Action Markers\",\"value\":\"Ear flattening, orbital squint (AU105/AU43)\",\"inline\":true},"
-                                "{\"name\":\"Scientific References\",\"value\":\"• [Kessler & Turner (1997) Animal Welfare](https://www.aspcapro.org/resource/cat-stress-score-css)\\n• [Evangelista et al. (2019) Nature Sci Rep](https://www.nature.com/articles/s41598-019-55693-8)\\n• [Stella et al. (2013) J Feline Med](https://journals.sagepub.com/doi/10.1177/1098612X13489215)\",\"inline\":false},"
-                                "{\"name\":\"Caregiver Guidance\",\"value\":\"Check for environmental stressors, loud sounds, or provide a quiet retreat space.\",\"inline\":false},"
-                                "{\"name\":\"Live Video Monitor\",\"value\":\"https://cat-emo-live.onrender.com\",\"inline\":false}"
+                                "{\"name\":\"貓咪當前狀態\",\"value\":\"**%s**\",\"inline\":true},"
+                                "{\"name\":\"持續時間\",\"value\":\"%s 秒\",\"inline\":true},"
+                                "{\"name\":\"辨識信心度\",\"value\":\"%s%%\",\"inline\":true},"
+                                "{\"name\":\"即時影像監看\",\"value\":\"https://cat-emo-live.onrender.com\",\"inline\":false}"
                             "],"
                             "\"image\":{\"url\":\"attachment://snapshot.jpg\"},"
-                            "\"footer\":{\"text\":\"Feline Behavioral & Stress Monitoring Sentinel (ESP32-S3 Edge AI)\"}"
+                            "\"footer\":{\"text\":\"Cat Emotion Monitoring\"}"
                         "}]"
                         "}",
-                        embed_color, msg.param1, css_desc, msg.param3, msg.param2, msg.param4
+                        embed_color, state_display, msg.param2, msg.param4
                     );
                     postMultipartToDiscord(payload, final_jpeg, final_jpeg_len);
                 } else {
@@ -534,22 +531,19 @@ static void discordWorkerTask(void* param) {
                         "{"
                         "\"username\":\"Cat Emotion Gateway\","
                         "\"embeds\":[{"
-                            "\"title\":\"[ALERT] Feline High Stress Anomaly Detected\","
-                            "\"description\":\"Prolonged distress posture detected exceeding the Cat Stress Score (CSS) threshold.\","
+                            "\"title\":\"[ALERT] 貓咪狀態警報\","
+                            "\"description\":\"偵測到貓咪處於緊張或不安狀態，請留意現場狀況。\","
                             "\"color\":%d,"
                             "\"fields\":["
-                                "{\"name\":\"Dominant State\",\"value\":\"**%s**\",\"inline\":true},"
-                                "{\"name\":\"CSS Assessment\",\"value\":\"`%s`\",\"inline\":true},"
-                                "{\"name\":\"Stress Index\",\"value\":\"%s%%\",\"inline\":true},"
-                                "{\"name\":\"Sustained Duration\",\"value\":\"%ss\",\"inline\":true},"
-                                "{\"name\":\"Model Confidence\",\"value\":\"%s%%\",\"inline\":true},"
-                                "{\"name\":\"Scientific References\",\"value\":\"• [Kessler & Turner (1997) Animal Welfare](https://www.aspcapro.org/resource/cat-stress-score-css)\\n• [Evangelista et al. (2019) Nature Sci Rep](https://www.nature.com/articles/s41598-019-55693-8)\",\"inline\":false},"
-                                "{\"name\":\"Live Video Monitor\",\"value\":\"https://cat-emo-live.onrender.com\",\"inline\":false}"
+                                "{\"name\":\"貓咪當前狀態\",\"value\":\"**%s**\",\"inline\":true},"
+                                "{\"name\":\"持續時間\",\"value\":\"%s 秒\",\"inline\":true},"
+                                "{\"name\":\"辨識信心度\",\"value\":\"%s%%\",\"inline\":true},"
+                                "{\"name\":\"即時影像監看\",\"value\":\"https://cat-emo-live.onrender.com\",\"inline\":false}"
                             "],"
-                            "\"footer\":{\"text\":\"Feline Behavioral & Stress Monitoring Sentinel (ESP32-S3 Edge AI)\"}"
+                            "\"footer\":{\"text\":\"Cat Emotion Monitoring\"}"
                         "}]"
                         "}",
-                        embed_color, msg.param1, css_desc, msg.param3, msg.param2, msg.param4
+                        embed_color, state_display, msg.param2, msg.param4
                     );
                     postJsonToDiscord(payload);
                 }
