@@ -53,7 +53,7 @@
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
     #define PTR_BUFFER_SIZE     8
-    #define COM_BUFFER_SIZE     (1024 * 128)
+    #define COM_BUFFER_SIZE     (1024 * 32)
     #define RSP_BUFFER_SIZE     (1024 * 196)
     #define JPG_BUFFER_SIZE     (1024 * 128)
     #define RST_BUFFER_SIZE     (1024 * 64)
@@ -173,28 +173,19 @@ void startRemoteProxy(Proto through = PROTO_UART) {
     case PROTO_UART: {
 #ifdef ESP32
         static HardwareSerial atSerial(0);
+        atSerial.setRxBufferSize(COM_BUFFER_SIZE);
 #else
     #define atSerial Serial1
+        atSerial.setRxBufferSize(COM_BUFFER_SIZE);
 #endif
-        atSerial.setRxBufferSize(COM_BUFFER_SIZE);
-
-        // Hardware reset pulse to Himax WE2 via Pin D3 (RST)
-        Serial.println("[PROXY] Pulsing D3 (RST) LOW for 200ms to reset Vision AI module...");
-        pinMode(D3, OUTPUT);
-        digitalWrite(D3, LOW);
-        delay(200);
-        digitalWrite(D3, HIGH);
-        delay(100);
-        pinMode(D3, INPUT_PULLUP);
-
-        AI.begin(&atSerial, -1, 921600);
+        bool ok = AI.begin(&atSerial, D3, 921600);
         AI.set_rx_buffer(64 * 1024);
-        atSerial.begin(921600, SERIAL_8N1, D7, D6);
-        atSerial.setRxBufferSize(COM_BUFFER_SIZE);
+        Serial.printf("[PROXY] Vision AI module begin(UART) -> %s\n", ok ? "SUCCESS" : "FAILED");
 
+        // Explicitly command Himax WE2 to run continuous inference without stopping
         delay(100);
-        int avail = atSerial.available();
-        Serial.printf("[PROXY] Vision AI UART ready! Initial bytes in buffer: %d\n", avail);
+        AI.write("AT+INVOKE=-1,0,0\r\n", 18);
+        Serial.println("[PROXY] Sent continuous AT+INVOKE=-1,0,0 to Vision AI");
         break;
     }
     case PROTO_I2C: {
@@ -280,6 +271,7 @@ static void proxyCallback(const char* resp, size_t len) {
     PtrBuffer::Slot* p_slot = (PtrBuffer::Slot*)malloc(sizeof(PtrBuffer::Slot));
     if (p_slot == NULL) {
         log_e("Failed to allocate slot...");
+        free(copy);
         return;
     }
 
@@ -313,12 +305,21 @@ static void proxyCallback(const char* resp, size_t len) {
     }
 
     static size_t frame_count = 0;
+    static uint32_t s_last_cloud_frame_ms = 0;
     bool has_image = (strnstr(resp, MSG_IMAGE_KEY, len) != NULL);
     if (has_image) {
         frame_count++;
         g_total_frames = frame_count;
         g_last_frame_bytes = len;
         g_last_frame_millis = millis();
+
+        // Rate-limit cloud streaming to ~10-12 FPS to prevent TLS TCP backpressure and SRAM exhaustion
+        bool send_to_cloud = false;
+        uint32_t now_ms = g_last_frame_millis;
+        if (cloudClient.isConnected() && (now_ms - s_last_cloud_frame_ms >= 85)) {
+            s_last_cloud_frame_ms = now_ms;
+            send_to_cloud = true;
+        }
 
         // 1. Decode JPEG binary
         const char* slice = strnstr(resp, MSG_IMAGE_KEY MSG_QUOTE_STR, len);
@@ -351,7 +352,7 @@ static void proxyCallback(const char* resp, size_t len) {
                             if (webSocket.connectedClients() > 0) {
                                 webSocket.broadcastBIN((const uint8_t*)s_latest_jpeg_buf, ws_jpeg_size);
                             }
-                            if (cloudClient.isConnected()) {
+                            if (send_to_cloud) {
                                 cloudClient.sendBIN((const uint8_t*)s_latest_jpeg_buf, ws_jpeg_size);
                             }
                         }
@@ -401,7 +402,7 @@ static void proxyCallback(const char* resp, size_t len) {
                     if (webSocket.connectedClients() > 0) {
                         webSocket.broadcastTXT(ws_buf);
                     }
-                    if (cloudClient.isConnected()) {
+                    if (send_to_cloud) {
                         cloudClient.sendTXT(ws_buf);
                     }
                     sent_box = true;
@@ -412,7 +413,7 @@ static void proxyCallback(const char* resp, size_t len) {
         if (!sent_box) {
             s_has_latest_bbox = false;
             updateStressSample(EMOTION_NONE, 0.0f);
-            if (webSocket.connectedClients() > 0 || cloudClient.isConnected()) {
+            if (webSocket.connectedClients() > 0 || send_to_cloud) {
                 char ws_buf[128];
                 snprintf(ws_buf, sizeof(ws_buf),
                     "{\"emotion\":\"none\",\"confidence\":0.0,\"bbox\":null,\"raw\":[],\"timestamp\":%lu}",
@@ -421,7 +422,7 @@ static void proxyCallback(const char* resp, size_t len) {
                 if (webSocket.connectedClients() > 0) {
                     webSocket.broadcastTXT(ws_buf);
                 }
-                if (cloudClient.isConnected()) {
+                if (send_to_cloud) {
                     cloudClient.sendTXT(ws_buf);
                 }
             }
@@ -462,6 +463,28 @@ void loopRemoteProxy() {
     }
 
     uint32_t now = millis();
+
+    // Autonomous watchdog: automatically recover camera if Vision AI stops streaming frames
+    static uint32_t s_last_recover_attempt_ms = 0;
+    if (g_total_frames > 0 && (now - g_last_frame_millis > 5000) && (now - s_last_recover_attempt_ms > 4000)) {
+        s_last_recover_attempt_ms = now;
+        uint32_t stalled_sec = (now - g_last_frame_millis) / 1000;
+        Serial.printf("[PROXY WATCHDOG] Vision AI stalled for %lu s! Attempting recovery...\n", (unsigned long)stalled_sec);
+
+        if (stalled_sec < 10) {
+            AI.write("AT+INVOKE=-1,0,0\r\n", 18);
+        } else {
+            Serial.println("[PROXY WATCHDOG] Hard resetting Himax WE2 via Pin D3...");
+            pinMode(D3, OUTPUT);
+            digitalWrite(D3, LOW);
+            delay(50);
+            pinMode(D3, INPUT);
+            delay(1500);
+            AI.write("AT+INVOKE=-1,0,0\r\n", 18);
+            g_last_frame_millis = millis();
+        }
+    }
+
     if (now - s_last_diag_ms > 2500) {
         s_last_diag_ms = now;
         uint32_t elapsed = (g_last_frame_millis > 0) ? (now - g_last_frame_millis) : 0;
@@ -682,7 +705,10 @@ static esp_err_t stream_frame_handler(httpd_req_t* req) {
     }
 
     // Allocate buffer with 256 bytes headroom for multipart frame boundary header + trailing \r\n
-    char* send_buf = (char*)malloc(JPG_BUFFER_SIZE + 256);
+    char* send_buf = (char*)heap_caps_malloc(JPG_BUFFER_SIZE + 256, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (send_buf == NULL) {
+        send_buf = (char*)malloc(JPG_BUFFER_SIZE + 256);
+    }
     if (send_buf == NULL) {
         log_e("Failed to allocate jpeg send buffer...");
         return ESP_ERR_NO_MEM;
@@ -1113,7 +1139,8 @@ static esp_err_t command_handler(httpd_req_t* req) {
         return httpd_resp_send(req, reply, strlen(reply));
     }
     if (strstr(cmd_buf, "INVOKE") != NULL) {
-        Serial.printf("[HTTP] INVOKE -> algorithm config OK\n");
+        Serial.printf("[HTTP] INVOKE -> algorithm config OK & kicking continuous invoke\n");
+        AI.write("AT+INVOKE=-1,0,0\r\n", 18);
         char reply[256];
         snprintf(reply, sizeof(reply), "{\"type\":0,\"name\":\"%s%s\",\"code\":0,\"data\":{\"algorithm\":{\"config\":{\"tscore\":25,\"tiou\":45}}}}\r\n", cmd_tag_buf, cmd_buf);
         httpd_resp_set_type(req, "application/json");
@@ -1222,7 +1249,7 @@ static esp_err_t pin_handler(httpd_req_t* req) {
 static esp_err_t status_handler(httpd_req_t* req) {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    char buf[1280];
+    char buf[2048];
     uint32_t now = millis();
     uint32_t elapsed = (g_last_frame_millis > 0) ? (now - g_last_frame_millis) : 0;
     snprintf(buf, sizeof(buf),
@@ -1248,7 +1275,8 @@ static esp_err_t status_handler(httpd_req_t* req) {
         "<p><b>Last Frame Size:</b> %u bytes</p>"
         "<p><b>Last Frame Received:</b> %u ms ago</p>"
         "<p><b>Free PSRAM:</b> %u bytes</p>"
-        "<p><b>Free Heap:</b> %u bytes</p>"
+        "<p><b>Free Internal Heap:</b> %u bytes</p>"
+        "<p><b>Total Free Heap:</b> %u bytes</p>"
         "</div>"
         "<div class='card'>"
         "<h3>Links</h3>"
@@ -1263,6 +1291,7 @@ static esp_err_t status_handler(httpd_req_t* req) {
         (unsigned int)g_last_frame_bytes,
         (unsigned int)elapsed,
         (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned int)esp_get_free_heap_size()
     );
     return httpd_resp_send(req, buf, strlen(buf));
