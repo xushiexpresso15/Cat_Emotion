@@ -27,11 +27,11 @@ static const float WEIGHT_FOCUS  = 0.15f;
 static const float WEIGHT_SCARED = 0.85f;
 static const float WEIGHT_ANGRY  = 1.00f;
 
-// Dual-threshold hysteresis and timing parameters
-static const float    STRESS_ALERT_INDEX_THRESHOLD = 0.65f; // Trigger threshold (CSS 5-6 equivalent)
-static const float    STRESS_RESET_INDEX_THRESHOLD = 0.35f; // De-escalation reset threshold
-static const uint32_t DISTRESS_TIME_THRESHOLD_MS   = 3000;  // 3 seconds sustained duration
-static const uint32_t ALERT_COOLDOWN_MS            = 45000; // 45 seconds cooldown between Discord alerts
+// Dual-threshold hysteresis and timing parameters (Kessler & Turner 1997; Stella et al. 2013)
+static const float    STRESS_ALERT_INDEX_THRESHOLD = 0.55f; // Trigger threshold: CSS Level 5 (Anxious/Fearful) entry
+static const float    STRESS_RESET_INDEX_THRESHOLD = 0.30f; // De-escalation reset threshold: CSS Level 2 (Relaxed baseline)
+static const uint32_t DISTRESS_TIME_THRESHOLD_MS   = 6000;  // 6.0 seconds sustained duration (filters transient startle <2s)
+static const uint32_t ALERT_COOLDOWN_MS            = 60000; // 60 seconds cooldown between Discord alerts
 
 static float    s_smoothed_stress = 0.0f;
 static float    s_latest_raw_score = 0.0f;
@@ -111,7 +111,7 @@ void updateStressSample(int emotion_class, float confidence) {
         s_distress_sample_count++;
     } else if (sample_score < 0.25f) {
         // Graceful decay when cat returns to relaxed or neutral state (tolerates momentary frame misses)
-        uint32_t decay = (elapsed_ms > 1) ? (elapsed_ms / 2) : 1;
+        uint32_t decay = (elapsed_ms > 2) ? (elapsed_ms / 3) : 1;
         if (s_consecutive_distress_ms > decay) {
             s_consecutive_distress_ms -= decay;
         } else {

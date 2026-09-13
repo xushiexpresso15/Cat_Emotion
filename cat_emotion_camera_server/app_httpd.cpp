@@ -179,7 +179,6 @@ void startRemoteProxy(Proto through = PROTO_UART) {
         atSerial.setRxBufferSize(COM_BUFFER_SIZE);
 #endif
         bool ok = AI.begin(&atSerial, D3, 921600);
-        AI.set_rx_buffer(64 * 1024);
         Serial.printf("[PROXY] Vision AI module begin(UART) -> %s\n", ok ? "SUCCESS" : "FAILED");
 
         // Explicitly command Himax WE2 to run continuous inference without stopping
@@ -1309,7 +1308,7 @@ static esp_err_t status_handler(httpd_req_t* req) {
         "<p><b>Last Frame Size:</b> %u bytes</p>"
         "<p><b>Last Frame Received:</b> %u ms ago</p>"
         "<p><b>Stress Score:</b> %.2f (CSS Level %d)</p>"
-        "<p><b>Sustained Distress:</b> %.1fs / 3.0s</p>"
+        "<p><b>Sustained Distress:</b> %.1fs / 6.0s</p>"
         "<p><b>Alert Cooldown:</b> %s</p>"
         "<p><b>Free PSRAM:</b> %u bytes</p>"
         "<p><b>Free Internal Heap:</b> %u bytes</p>"
