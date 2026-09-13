@@ -1,5 +1,5 @@
 # Cat Emotion Recognition: Edge AI and Wireless Telemetry System
-
+## Feel free to analysis & use our codes :)
 ## Introduction
 Cat Emotion is an open-source embedded edge AI project designed for real-time feline facial expression detection and emotional state classification. 
 
