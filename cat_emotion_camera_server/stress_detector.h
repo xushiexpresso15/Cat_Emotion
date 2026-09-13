@@ -31,5 +31,8 @@ void updateStressSample(int emotion_class, float confidence);
 bool evaluateStressAnomaly(StressReport* report);
 float getCurrentStressScore();
 int getEstimatedCSSLevel();
+float getConsecutiveDistressSec();
+uint32_t getAlertCooldownRemainingSec();
+void resetAlertCooldown();
 const char* getEmotionName(int emotion_class);
 const char* getCSSLevelDescription(int css_level);

@@ -1246,12 +1246,45 @@ static esp_err_t pin_handler(httpd_req_t* req) {
     return httpd_resp_send(req, buf, strlen(buf));
 }
 
+static esp_err_t test_alert_handler(httpd_req_t* req) {
+    resetAlertCooldown();
+    Serial.println("[TEST ALERT] Triggered via HTTP /test_alert!");
+    sendDiscordStressAlert(
+        "Angry",
+        0.88f,
+        3.5f,
+        0.92f,
+        6,
+        "https://cat-emo-live.onrender.com",
+        s_latest_jpeg_buf,
+        s_latest_jpeg_len,
+        s_has_latest_bbox ? &s_latest_bbox : nullptr
+    );
+    httpd_resp_set_type(req, "text/html");
+    const char* resp = "<!DOCTYPE html><html><head><meta http-equiv='refresh' content='2;url=/status'></head>"
+                       "<body style='font-family:sans-serif;padding:20px;max-width:500px;margin:auto;text-align:center;'>"
+                       "<h2>Test Alert Queued to Discord!</h2>"
+                       "<p>Check your Discord channel now.</p>"
+                       "<p><a href='/status'>&lt;&lt; Return to Status</a></p>"
+                       "</body></html>";
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
 static esp_err_t status_handler(httpd_req_t* req) {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     char buf[2048];
     uint32_t now = millis();
     uint32_t elapsed = (g_last_frame_millis > 0) ? (now - g_last_frame_millis) : 0;
+
+    char cd_str[64];
+    uint32_t cd = getAlertCooldownRemainingSec();
+    if (cd == 0) {
+        snprintf(cd_str, sizeof(cd_str), "<span class='ok'>Ready to trigger</span>");
+    } else {
+        snprintf(cd_str, sizeof(cd_str), "<span class='warn'>Cooldown (%lu s left)</span>", (unsigned long)cd);
+    }
+
     snprintf(buf, sizeof(buf),
         "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<meta http-equiv='refresh' content='3'>"
@@ -1262,6 +1295,7 @@ static esp_err_t status_handler(httpd_req_t* req) {
         ".pin-num{font-size:36px;font-weight:bold;letter-spacing:6px;color:#0071e3;margin:8px 0;font-family:monospace;}"
         "h2{margin-top:0;color:#333;}.ok{color:#2ecc71;font-weight:bold;}.warn{color:#e67e22;font-weight:bold;}"
         "a{display:inline-block;margin-top:8px;color:#0071e3;text-decoration:none;font-weight:bold;}"
+        ".btn{display:inline-block;background:#0071e3;color:white;padding:8px 16px;border-radius:6px;text-decoration:none;font-weight:bold;margin-top:8px;}"
         "</style></head><body>"
         "<div class='pin-box'>"
         "<h3 style='margin:0;color:#0071e3;'>Current Session PIN</h3>"
@@ -1274,15 +1308,18 @@ static esp_err_t status_handler(httpd_req_t* req) {
         "<p><b>Frames Received:</b> %u</p>"
         "<p><b>Last Frame Size:</b> %u bytes</p>"
         "<p><b>Last Frame Received:</b> %u ms ago</p>"
+        "<p><b>Stress Score:</b> %.2f (CSS Level %d)</p>"
+        "<p><b>Sustained Distress:</b> %.1fs / 3.0s</p>"
+        "<p><b>Alert Cooldown:</b> %s</p>"
         "<p><b>Free PSRAM:</b> %u bytes</p>"
         "<p><b>Free Internal Heap:</b> %u bytes</p>"
-        "<p><b>Total Free Heap:</b> %u bytes</p>"
         "</div>"
         "<div class='card'>"
-        "<h3>Links</h3>"
-        "<p><a href='/'>&gt;&gt; Open Web UI (Boxes & Stream)</a></p>"
+        "<h3>Links &amp; Test</h3>"
+        "<p><a href='/'>&gt;&gt; Open Web UI (Boxes &amp; Stream)</a></p>"
         "<p><a href='/pin'>&gt;&gt; JSON PIN Endpoint (/pin)</a></p>"
         "<p><a href='http://192.168.4.1:8080/stream'>&gt;&gt; Direct MJPEG Stream (Port 8080)</a></p>"
+        "<p><a class='btn' href='/test_alert'>&gt;&gt; Send Test Discord Alert Now</a></p>"
         "</div>"
         "</body></html>",
         s_app_session_pin,
@@ -1290,9 +1327,12 @@ static esp_err_t status_handler(httpd_req_t* req) {
         (unsigned int)g_total_frames,
         (unsigned int)g_last_frame_bytes,
         (unsigned int)elapsed,
+        getCurrentStressScore(),
+        getEstimatedCSSLevel(),
+        getConsecutiveDistressSec(),
+        cd_str,
         (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-        (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-        (unsigned int)esp_get_free_heap_size()
+        (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL)
     );
     return httpd_resp_send(req, buf, strlen(buf));
 }
@@ -1379,10 +1419,16 @@ void startCameraServer() {
                            .handler  = pin_handler,
                            .user_ctx = NULL};
 
+    httpd_uri_t test_alert_uri = {.uri      = "/test_alert",
+                                  .method   = HTTP_GET,
+                                  .handler  = test_alert_handler,
+                                  .user_ctx = NULL};
+
     Serial.printf("[HTTP] Starting web server on port: %d ...\n", config.server_port);
     if ((ret = httpd_start(&web_httpd, &config)) == ESP_OK) {
         httpd_register_uri_handler(web_httpd, &index_uri);
         httpd_register_uri_handler(web_httpd, &status_uri);
+        httpd_register_uri_handler(web_httpd, &test_alert_uri);
         httpd_register_uri_handler(web_httpd, &pin_uri);
         httpd_register_uri_handler(web_httpd, &result_uri);
         httpd_register_uri_handler(web_httpd, &command_uri);
