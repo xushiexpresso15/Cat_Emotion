@@ -141,12 +141,19 @@ Instantaneous classification alone is susceptible to brief orienting reflexes (e
    Smooths instantaneous stress scores over time with continuous time constant $\tau = 3.5\text{s}$ ($\alpha = \frac{\Delta t}{\tau + \Delta t}$).
 3. **Acute Surge Acceleration**:
    When distress detection confidence exceeds $0.80$, an acute acceleration multiplier ($1.0\times$ to $1.4\times$) accelerates the duration accumulator, rapidly capturing severe panic events (Stella et al., 2013).
-4. **Dual-Threshold Schmitt Trigger (Hysteresis)**:
-   - Alert trigger: Smoothed stress index $\ge 0.55$ (Kessler & Turner CSS Level 5 entry) sustained continuously for $\ge 6.0\text{ seconds}$ (distinguishes authentic distress from transient startle reflexes $<2\text{s}$; Stella et al., 2013).
+4. **Dual-Threshold Schmitt Trigger & Bout Engine**:
+   - *Trigger Threshold*: $S_{\text{smoothed}} \ge 0.65$ sustained for $\ge 6.0\text{ seconds}$ (aligned with CSS Level 5 sustained distress criteria).
+   - *Bout Continuity Reset*: 2.0-second inter-bout gap ceiling resets transient accumulation if distress ceases.
+   - *Distress Density Gating*: Requires $\ge 50\%$ distress density and at least 10 distress frames in the 6.0-second bout window; resets immediately if calm frames dominate ($\ge 8$ calm frames and density $< 35\%$).
    - De-escalation reset: Smoothed index $\le 0.30$ (CSS Level 2 calm baseline). Prevents alert bouncing during boundary transitions.
-5. **Rate-Limiting Cooldown**:
-   - A 60-second refractory cooldown period balances event responsiveness with Discord rate-limiting protection.
-6. **24/7 Autonomous Monitoring & Health Watchdog**:
+5. **Multi-Cat Spatial Parsing & Dominant Emotion Voting**:
+   - Automatically parses up to 10 feline bounding boxes per frame.
+   - Isolates individual cats exhibiting acute distress ($C_k \ge 0.55$, Angry/Scared) without letting calm cohabiting cats falsely dilute or trigger alarms.
+   - Utilizes dynamic confidence-weighted statistical majority voting over the sustained bout window to eliminate single-frame emotion latching (e.g. Scared vs. Angry).
+   - Discord alert snapshot automatically pinpoints and renders the exact distressed cat's bounding box.
+6. **Notification Cooldown**:
+   - A 300-second (5-minute) timer prevents notification spamming.
+7. **24/7 Autonomous Monitoring & Health Watchdog**:
    - Inference parsing and stress scoring operate autonomously on every frame.
    - Built-in hardware watchdog and heap protection prevent memory exhaustion, ensuring rock-solid continuous uptime.
 
