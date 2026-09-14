@@ -32,7 +32,8 @@ static const uint32_t BOUT_GAP_TOLERANCE_MS      = 2000;
 static const uint32_t ALERT_COOLDOWN_MS          = 45000;
 
 // Instantaneous confidence threshold for high-distress classification
-static const float DISTRESS_CONFIDENCE_THRESHOLD = 0.45f;
+// Raised to 0.55 to avoid false bouts triggered by ambiguous / low-confidence detections
+static const float DISTRESS_CONFIDENCE_THRESHOLD = 0.55f;
 
 // Continuous state tracking
 static float    s_smoothed_stress = 0.0f;
@@ -48,10 +49,24 @@ static bool     s_alert_sent_for_current_bout = false;
 // Alert & Cooldown
 static uint32_t s_last_alert_time = 0;
 
-// Statistics for the active bout
-static int      s_last_dominant_emotion = EMOTION_RELAX;
-static float    s_accum_conf = 0.0f;
-static int      s_distress_sample_count = 0;
+// Ethological voting counters for the active bout (prevents irreversible latching to Angry)
+static uint32_t s_bout_total_samples = 0;
+static uint32_t s_distress_sample_count = 0;
+static uint32_t s_angry_count = 0;
+static uint32_t s_scared_count = 0;
+static uint32_t s_calm_count = 0;
+static float    s_angry_conf_sum = 0.0f;
+static float    s_scared_conf_sum = 0.0f;
+
+static void resetBoutCounters() {
+    s_bout_total_samples = 0;
+    s_distress_sample_count = 0;
+    s_angry_count = 0;
+    s_scared_count = 0;
+    s_calm_count = 0;
+    s_angry_conf_sum = 0.0f;
+    s_scared_conf_sum = 0.0f;
+}
 
 void initStressDetector() {
     s_smoothed_stress = 0.0f;
@@ -62,10 +77,8 @@ void initStressDetector() {
     s_last_distress_frame_ms = 0;
     s_alert_sent_for_current_bout = false;
     s_last_alert_time = 0;
-    s_last_dominant_emotion = EMOTION_RELAX;
-    s_accum_conf = 0.0f;
-    s_distress_sample_count = 0;
-    Serial.println("[Stress Detector] Initialized Ethological Bout Engine (Kessler & Turner CSS + Stella et al. 2013)");
+    resetBoutCounters();
+    Serial.println("[Stress Detector] Initialized Robust Multi-Cat Ethological Engine");
 }
 
 int calculateCSSLevel(float score) {
@@ -78,10 +91,29 @@ int calculateCSSLevel(float score) {
     return 7;                    // Terrified / High Agonistic
 }
 
+// Statistical majority voting: accurately determines true dominant distress state
+static int calculateDominantDistressEmotion() {
+    if (s_angry_count > s_scared_count) {
+        return EMOTION_ANGRY;
+    } else if (s_scared_count > s_angry_count) {
+        return EMOTION_SCARED;
+    } else if (s_angry_count > 0 && s_scared_count > 0) {
+        float avg_angry = s_angry_conf_sum / (float)s_angry_count;
+        float avg_scared = s_scared_conf_sum / (float)s_scared_count;
+        return (avg_angry >= avg_scared) ? EMOTION_ANGRY : EMOTION_SCARED;
+    } else if (s_angry_count > 0) {
+        return EMOTION_ANGRY;
+    } else if (s_scared_count > 0) {
+        return EMOTION_SCARED;
+    }
+    return EMOTION_RELAX;
+}
+
 int getEstimatedCSSLevel() {
     if (s_bout_active) {
-        if (s_last_dominant_emotion == EMOTION_ANGRY) return 6;
-        if (s_last_dominant_emotion == EMOTION_SCARED) return 5;
+        int dom = calculateDominantDistressEmotion();
+        if (dom == EMOTION_ANGRY) return 6;
+        if (dom == EMOTION_SCARED) return 5;
     }
     return calculateCSSLevel(s_smoothed_stress);
 }
@@ -123,31 +155,39 @@ void updateStressSample(int emotion_class, float confidence) {
             s_bout_active = true;
             s_bout_start_time_ms = now;
             s_alert_sent_for_current_bout = false;
-            s_last_dominant_emotion = emotion_class;
-            s_accum_conf = confidence;
-            s_distress_sample_count = 1;
-            Serial.printf("[Stress Detector] Distress bout started (Emotion: %s, Conf: %.0f%%)\n",
+            resetBoutCounters();
+            Serial.printf("[Stress Detector] Distress bout onset (First emotion: %s, Conf: %.0f%%)\n",
                 getEmotionName(emotion_class), confidence * 100.0f);
-        } else {
-            // Bout continues
-            s_accum_conf += confidence;
-            s_distress_sample_count++;
-            if (emotion_class == EMOTION_ANGRY) {
-                s_last_dominant_emotion = EMOTION_ANGRY;
-            }
+        }
+        
+        s_bout_total_samples++;
+        s_distress_sample_count++;
+        if (emotion_class == EMOTION_ANGRY) {
+            s_angry_count++;
+            s_angry_conf_sum += confidence;
+        } else if (emotion_class == EMOTION_SCARED) {
+            s_scared_count++;
+            s_scared_conf_sum += confidence;
         }
     } else {
-        // Non-distress frame: evaluate if the bout has exceeded the 2-second tolerance
-        if (s_bout_active && (now - s_last_distress_frame_ms >= BOUT_GAP_TOLERANCE_MS)) {
-            uint32_t total_bout_sec = (s_last_distress_frame_ms > s_bout_start_time_ms) ?
-                ((s_last_distress_frame_ms - s_bout_start_time_ms) / 1000) : 0;
-            Serial.printf("[Stress Detector] Distress bout ended after %lu s (Cat returned to calm). Duration reset to 0s.\n",
-                (unsigned long)total_bout_sec);
-            s_bout_active = false;
-            s_bout_start_time_ms = 0;
-            s_alert_sent_for_current_bout = false;
-            s_accum_conf = 0.0f;
-            s_distress_sample_count = 0;
+        if (s_bout_active) {
+            s_bout_total_samples++;
+            s_calm_count++;
+
+            // Evaluate if bout has timed out via 2.0s gap tolerance OR has been overwhelmed by calm frames
+            bool gap_exceeded = (now - s_last_distress_frame_ms >= BOUT_GAP_TOLERANCE_MS);
+            bool calm_dominated = (s_calm_count >= 8 && ((float)s_distress_sample_count / (float)s_bout_total_samples < 0.35f));
+
+            if (gap_exceeded || calm_dominated) {
+                uint32_t total_bout_sec = (s_last_distress_frame_ms > s_bout_start_time_ms) ?
+                    ((s_last_distress_frame_ms - s_bout_start_time_ms) / 1000) : 0;
+                Serial.printf("[Stress Detector] Distress bout terminated after %lu s (Cat calm / distress density low). Resetting.\n",
+                    (unsigned long)total_bout_sec);
+                s_bout_active = false;
+                s_bout_start_time_ms = 0;
+                s_alert_sent_for_current_bout = false;
+                resetBoutCounters();
+            }
         }
     }
 }
@@ -156,30 +196,51 @@ bool evaluateStressAnomaly(StressReport* report) {
     uint32_t now = millis();
     bool trigger = false;
 
-    // Check if an active bout has timed out due to no recent distress frames
+    // Timeout check
     if (s_bout_active && (now - s_last_distress_frame_ms >= BOUT_GAP_TOLERANCE_MS)) {
         s_bout_active = false;
         s_bout_start_time_ms = 0;
         s_alert_sent_for_current_bout = false;
-        s_accum_conf = 0.0f;
-        s_distress_sample_count = 0;
+        resetBoutCounters();
     }
 
     float current_duration_sec = 0.0f;
+    int dominant_emotion = calculateDominantDistressEmotion();
+    float avg_conf = 0.85f;
+
     if (s_bout_active) {
         uint32_t duration_ms = (now >= s_bout_start_time_ms) ? (now - s_bout_start_time_ms) : 0;
         current_duration_sec = (float)duration_ms / 1000.0f;
 
+        float distress_density = (s_bout_total_samples > 0) ? 
+            ((float)s_distress_sample_count / (float)s_bout_total_samples) : 0.0f;
+
         // Trigger condition (Stella et al. 2013; Kessler & Turner 1997):
         // 1. Bout duration >= 6.0 seconds
-        // 2. Exactly one alert dispatched per continuous distress bout
-        // 3. Cooldown has elapsed since last Discord notification
-        if (duration_ms >= DISTRESS_TIME_THRESHOLD_MS && !s_alert_sent_for_current_bout) {
+        // 2. Distress density >= 50% (at least half the observed frames are acute distress)
+        // 3. Distress sample count >= 10 frames (filters transient sensor dropouts)
+        // 4. Exactly one alert dispatched per continuous distress bout
+        // 5. Cooldown has elapsed since last Discord notification (45s)
+        if (duration_ms >= DISTRESS_TIME_THRESHOLD_MS &&
+            distress_density >= 0.50f &&
+            s_distress_sample_count >= 10 &&
+            !s_alert_sent_for_current_bout) {
             if (s_last_alert_time == 0 || (now - s_last_alert_time >= ALERT_COOLDOWN_MS)) {
                 trigger = true;
                 s_alert_sent_for_current_bout = true;
                 s_last_alert_time = now;
+                Serial.printf("[Stress Detector] *** ALERT QUALIFIED! Dominant: %s (Angry: %u, Scared: %u), Density: %.0f%% ***\n",
+                    getEmotionName(dominant_emotion), s_angry_count, s_scared_count, distress_density * 100.0f);
             }
+        }
+
+        // Calculate average confidence for the dominant emotion
+        if (dominant_emotion == EMOTION_ANGRY && s_angry_count > 0) {
+            avg_conf = s_angry_conf_sum / (float)s_angry_count;
+        } else if (dominant_emotion == EMOTION_SCARED && s_scared_count > 0) {
+            avg_conf = s_scared_conf_sum / (float)s_scared_count;
+        } else if (s_distress_sample_count > 0) {
+            avg_conf = (s_angry_conf_sum + s_scared_conf_sum) / (float)s_distress_sample_count;
         }
     }
 
@@ -187,8 +248,8 @@ bool evaluateStressAnomaly(StressReport* report) {
         report->stress_index = s_smoothed_stress;
         report->raw_sample_score = s_latest_raw_score;
         report->consecutive_distress_sec = current_duration_sec;
-        report->dominant_emotion = s_last_dominant_emotion;
-        report->avg_confidence = (s_distress_sample_count > 0) ? (s_accum_conf / (float)s_distress_sample_count) : 0.85f;
+        report->dominant_emotion = dominant_emotion;
+        report->avg_confidence = avg_conf;
         report->css_level = getEstimatedCSSLevel();
         report->is_alert_triggered = trigger;
     }

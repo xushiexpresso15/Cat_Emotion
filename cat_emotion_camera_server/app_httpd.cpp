@@ -237,6 +237,8 @@ static uint8_t*   s_latest_jpeg_buf = NULL;
 static size_t     s_latest_jpeg_len = 0;
 static BBoxCoords s_latest_bbox = {0, 0, 0, 0, -1, 0.0f};
 static bool       s_has_latest_bbox = false;
+static BBoxCoords s_latest_distress_bbox = {0, 0, 0, 0, -1, 0.0f};
+static bool       s_has_latest_distress_bbox = false;
 
 static void proxyCallback(const char* resp, size_t len) {
     static timeval timestamp;
@@ -366,37 +368,109 @@ static void proxyCallback(const char* resp, size_t len) {
         if (b != NULL) {
             const char* b_open = strchr(b, '[');
             if (b_open != NULL && b_open[1] == '[') {
-                int cx = 0, cy = 0, cw = 0, ch = 0, score = 0, target = -1;
-                if (sscanf(b_open + 2, "%d,%d,%d,%d,%d,%d", &cx, &cy, &cw, &ch, &score, &target) >= 6) {
-                    int x = cx - cw / 2;
-                    int y = cy - ch / 2;
-                    if (x < 0) x = 0;
-                    if (y < 0) y = 0;
-                    const char* emotion_names[] = {"angry", "focus", "relax", "scared"};
-                    const char* emotion = (target >= 0 && target < 4) ? emotion_names[target] : "relax";
+                // Multi-box parsing (up to 10 detected cats)
+                struct ParsedBox {
+                    int x, y, w, h;
+                    int score;
+                    int target;
+                };
+                ParsedBox parsed_boxes[10];
+                int box_count = 0;
 
-                    s_latest_bbox.x = x;
-                    s_latest_bbox.y = y;
-                    s_latest_bbox.w = cw;
-                    s_latest_bbox.h = ch;
-                    s_latest_bbox.target = target;
-                    s_latest_bbox.confidence = score / 100.0f;
+                const char* p = b_open;
+                while (p != NULL && box_count < 10) {
+                    p = strchr(p, '[');
+                    if (!p) break;
+                    if (p == b_open) {
+                        p++;
+                        continue;
+                    }
+                    int cx = 0, cy = 0, cw = 0, ch = 0, score = 0, target = -1;
+                    if (sscanf(p + 1, "%d,%d,%d,%d,%d,%d", &cx, &cy, &cw, &ch, &score, &target) >= 6) {
+                        int bx = cx - cw / 2;
+                        int by = cy - ch / 2;
+                        if (bx < 0) bx = 0;
+                        if (by < 0) by = 0;
+                        parsed_boxes[box_count].x = bx;
+                        parsed_boxes[box_count].y = by;
+                        parsed_boxes[box_count].w = cw;
+                        parsed_boxes[box_count].h = ch;
+                        parsed_boxes[box_count].score = score;
+                        parsed_boxes[box_count].target = target;
+                        box_count++;
+                    }
+                    p = strchr(p, ']');
+                    if (p) p++;
+                }
+
+                if (box_count > 0) {
+                    // 1. Primary box selection (highest confidence overall for UI header / legacy fallback)
+                    int best_idx = 0;
+                    for (int i = 1; i < box_count; i++) {
+                        if (parsed_boxes[i].score > parsed_boxes[best_idx].score) {
+                            best_idx = i;
+                        }
+                    }
+
+                    int best_target = parsed_boxes[best_idx].target;
+                    float best_score = parsed_boxes[best_idx].score / 100.0f;
+                    const char* emotion_names[] = {"angry", "focus", "relax", "scared"};
+                    const char* best_emotion = (best_target >= 0 && best_target < 4) ? emotion_names[best_target] : "relax";
+
+                    s_latest_bbox.x = parsed_boxes[best_idx].x;
+                    s_latest_bbox.y = parsed_boxes[best_idx].y;
+                    s_latest_bbox.w = parsed_boxes[best_idx].w;
+                    s_latest_bbox.h = parsed_boxes[best_idx].h;
+                    s_latest_bbox.target = best_target;
+                    s_latest_bbox.confidence = best_score;
                     s_has_latest_bbox = true;
 
-                    char raw_boxes[128];
+                    // 2. Identify if ANY cat is in acute distress (Angry or Scared with score >= 55)
+                    int distress_idx = -1;
+                    for (int i = 0; i < box_count; i++) {
+                        if ((parsed_boxes[i].target == EMOTION_ANGRY || parsed_boxes[i].target == EMOTION_SCARED) &&
+                            parsed_boxes[i].score >= 55) {
+                            if (distress_idx < 0 || parsed_boxes[i].score > parsed_boxes[distress_idx].score) {
+                                distress_idx = i;
+                            }
+                        }
+                    }
+
+                    if (distress_idx >= 0) {
+                        // Pass the distressed cat to the stress detector
+                        s_latest_distress_bbox.x = parsed_boxes[distress_idx].x;
+                        s_latest_distress_bbox.y = parsed_boxes[distress_idx].y;
+                        s_latest_distress_bbox.w = parsed_boxes[distress_idx].w;
+                        s_latest_distress_bbox.h = parsed_boxes[distress_idx].h;
+                        s_latest_distress_bbox.target = parsed_boxes[distress_idx].target;
+                        s_latest_distress_bbox.confidence = parsed_boxes[distress_idx].score / 100.0f;
+                        s_has_latest_distress_bbox = true;
+
+                        updateStressSample(parsed_boxes[distress_idx].target, parsed_boxes[distress_idx].score / 100.0f);
+                    } else {
+                        // All detected cats are calm (Relax or Focus)
+                        s_has_latest_distress_bbox = false;
+                        updateStressSample(best_target, best_score);
+                    }
+
+                    char raw_boxes[512];
                     const char* b_close = strstr(b_open, "]]");
                     if (b_close != NULL && (size_t)(b_close + 2 - b_open) < sizeof(raw_boxes)) {
                         size_t raw_len = (b_close + 2) - b_open;
                         memcpy(raw_boxes, b_open, raw_len);
                         raw_boxes[raw_len] = '\0';
                     } else {
-                        snprintf(raw_boxes, sizeof(raw_boxes), "[[%d,%d,%d,%d,%d,%d]]", cx, cy, cw, ch, score, target);
+                        snprintf(raw_boxes, sizeof(raw_boxes), "[[%d,%d,%d,%d,%d,%d]]",
+                            parsed_boxes[best_idx].x + parsed_boxes[best_idx].w / 2,
+                            parsed_boxes[best_idx].y + parsed_boxes[best_idx].h / 2,
+                            parsed_boxes[best_idx].w, parsed_boxes[best_idx].h,
+                            parsed_boxes[best_idx].score, parsed_boxes[best_idx].target);
                     }
 
-                    char ws_buf[320];
+                    char ws_buf[768];
                     snprintf(ws_buf, sizeof(ws_buf),
                         "{\"emotion\":\"%s\",\"confidence\":%.2f,\"bbox\":{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d},\"raw\":%s,\"timestamp\":%lu}",
-                        emotion, score / 100.0f, x, y, cw, ch, raw_boxes, (unsigned long)millis()
+                        best_emotion, best_score, s_latest_bbox.x, s_latest_bbox.y, s_latest_bbox.w, s_latest_bbox.h, raw_boxes, (unsigned long)millis()
                     );
                     if (webSocket.connectedClients() > 0) {
                         webSocket.broadcastTXT(ws_buf);
@@ -405,12 +479,12 @@ static void proxyCallback(const char* resp, size_t len) {
                         cloudClient.sendTXT(ws_buf);
                     }
                     sent_box = true;
-                    updateStressSample(target, score / 100.0f);
                 }
             }
         }
         if (!sent_box) {
             s_has_latest_bbox = false;
+            s_has_latest_distress_bbox = false;
             updateStressSample(EMOTION_NONE, 0.0f);
             if (webSocket.connectedClients() > 0 || send_to_cloud) {
                 char ws_buf[128];
@@ -457,7 +531,7 @@ void loopRemoteProxy() {
             "https://cat-emo-live.onrender.com",
             s_latest_jpeg_buf,
             s_latest_jpeg_len,
-            s_has_latest_bbox ? &s_latest_bbox : nullptr
+            s_has_latest_distress_bbox ? &s_latest_distress_bbox : (s_has_latest_bbox ? &s_latest_bbox : nullptr)
         );
     }
 
@@ -1221,6 +1295,9 @@ static esp_err_t index_handler(httpd_req_t* req) {
     Serial.printf("[HTTP] GET / from client %d\n", httpd_req_to_sockfd(req));
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
     return httpd_resp_send(req, (const char*)web_index_html_gz, web_index_html_gz_len);
 }
 
