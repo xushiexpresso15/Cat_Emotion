@@ -1,25 +1,23 @@
 {
-  "version": "v8.1.0-refined-multicat-sota",
-  "name": "yolov8n_cat_emotion_v8_refined_sota",
+  "version": "v8.2.0-250e-sota",
+  "name": "yolov8n_cat_emotion_v8_250e_sota",
   "created_at": "2026-09-14",
-  "architecture_note": "YOLOv8n SOTA with Active Hard-Negative Suppression + SWA Model Soup, surpassing v8_perfect_sota (Test mAP50 88.55%, mAP50-95 72.44%, 0% background FP)",
-  "qat_and_calibration_innovations": {
-    "quantization_type": "Straight-Through Estimator (STE) Quantization-Aware Training (QAT)",
-    "weights_quant": "Per-channel symmetric INT8 [-127, 127]",
-    "activations_quant": "Per-tensor unsigned INT8 [0, 255]",
-    "decoupled_outputs": "Independent scale quantization: [1, 4, 756] boxes & [1, 756, 4] scores",
-    "active_hard_negative_suppression": "Active hard-negative quadratic penalty on non-foreground anchors (~fg_mask) achieving 0/53 background false positives (100% rejection)",
-    "anti_overfitting_soup": "Stochastic Weight Averaging / Model Soup finding ultra-flat generalization minima",
-    "multi_cat_preservation": "Mutual exclusion and balanced scale assignment allowing secondary cats to reach >= 66-91% confidence",
-    "unmodified_firmware_compatibility": "Preserves standard dual-tensor signature and flash offset 0x00B7B000 (100% compatible with Himax output.img)"
+  "architecture_note": "YOLOv8n Full 250 Epochs SOTA + 25 Epochs QAT with Active Hard-Negative Suppression, naturally converged without fine-tuning overfitting. Surpasses v8_perfect_sota on BOTH Val (80.47% vs 79.70%) and Test (87.57% vs 86.26%) splits with 0% background false positives.",
+  "training_protocol": {
+    "stage_1_epochs": 250,
+    "stage_2_qat_epochs": 25,
+    "initialization": "COCO pre-trained yolov8n.pt",
+    "close_mosaic_epochs": 35,
+    "lr_scheduler": "Cosine Annealing (0.01 -> 0.001)",
+    "loss_type": "Active Hard-Negative Suppression (~fg_mask, thresh=0.10, weight=5.0) + TaskAlignedAssigner (alpha=0.6, beta=4.5)"
   },
   "metrics": {
-    "test_mAP50": 88.55,
-    "test_mAP50_95": 72.44,
-    "test_precision": 89.35,
-    "test_recall": 90.80,
-    "val_mAP50": 79.01,
-    "val_mAP50_95": 63.39,
+    "val_mAP50": 80.47,
+    "val_mAP50_95": 63.66,
+    "test_mAP50": 87.57,
+    "test_mAP50_95": 71.09,
+    "test_precision": 90.00,
+    "test_recall": 90.20,
     "background_false_positives": "0/53 (100% rejection)"
   },
   "hardware": {
