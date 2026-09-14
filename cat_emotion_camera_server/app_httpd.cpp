@@ -331,16 +331,19 @@ static void proxyCallback(const char* resp, size_t len) {
             if (quote != NULL) {
                 size_t img_len = quote - data;
                 if (img_len > 0) {
+                    static size_t s_latest_jpeg_cap = JPG_BUFFER_SIZE;
                     if (s_latest_jpeg_buf == NULL) {
                         s_latest_jpeg_buf = (uint8_t*)heap_caps_malloc(JPG_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                        s_latest_jpeg_cap = JPG_BUFFER_SIZE;
                         if (s_latest_jpeg_buf == NULL) {
-                            s_latest_jpeg_buf = (uint8_t*)malloc(JPG_BUFFER_SIZE);
+                            s_latest_jpeg_cap = 32768;
+                            s_latest_jpeg_buf = (uint8_t*)malloc(s_latest_jpeg_cap);
                         }
                     }
                     if (s_latest_jpeg_buf != NULL) {
                         size_t ws_jpeg_size = 0;
                         if (mbedtls_base64_decode(
-                              s_latest_jpeg_buf, JPG_BUFFER_SIZE, &ws_jpeg_size, (const unsigned char*)data, img_len) == 0) {
+                              s_latest_jpeg_buf, s_latest_jpeg_cap, &ws_jpeg_size, (const unsigned char*)data, img_len) == 0) {
                             for (size_t i = 0; i + 1 < ws_jpeg_size; ++i) {
                                 if (s_latest_jpeg_buf[i] == 0xFF && s_latest_jpeg_buf[i + 1] == 0xD9) {
                                     ws_jpeg_size = i + 2;
@@ -778,9 +781,11 @@ static esp_err_t stream_frame_handler(httpd_req_t* req) {
     }
 
     // Allocate buffer with 256 bytes headroom for multipart frame boundary header + trailing \r\n
-    char* send_buf = (char*)heap_caps_malloc(JPG_BUFFER_SIZE + 256, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t send_buf_cap = JPG_BUFFER_SIZE;
+    char* send_buf = (char*)heap_caps_malloc(send_buf_cap + 256, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (send_buf == NULL) {
-        send_buf = (char*)malloc(JPG_BUFFER_SIZE + 256);
+        send_buf_cap = 32768;
+        send_buf = (char*)malloc(send_buf_cap + 256);
     }
     if (send_buf == NULL) {
         log_e("Failed to allocate jpeg send buffer...");
@@ -836,7 +841,7 @@ static esp_err_t stream_frame_handler(httpd_req_t* req) {
 
         size_t jpeg_size = 0;
         if (mbedtls_base64_decode(
-              (unsigned char*)jpeg_buf, JPG_BUFFER_SIZE, &jpeg_size, (const unsigned char*)data, len) != 0) {
+              (unsigned char*)jpeg_buf, send_buf_cap, &jpeg_size, (const unsigned char*)data, len) != 0) {
             log_e("Failed to decode image data...");
             continue;
         }
