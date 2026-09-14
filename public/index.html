@@ -587,11 +587,39 @@
                     const rawStr = JSON.stringify(data.raw || []);
                     if (logRaw) logRaw.textContent = rawStr;
 
-                    if (data.bbox && data.emotion && data.emotion !== 'none') {
+                    let boxes = [];
+                    if (data.raw && Array.isArray(data.raw) && data.raw.length > 0) {
+                        const targetMap = {0: 'angry', 1: 'focus', 2: 'relax', 3: 'scared'};
+                        boxes = data.raw.map(b => {
+                            const w = b[2];
+                            const h = b[3];
+                            return {
+                                x: Math.max(0, b[0] - w / 2),
+                                y: Math.max(0, b[1] - h / 2),
+                                w: w,
+                                h: h,
+                                score: b[4],
+                                confidence: (b[4] || 0) / 100,
+                                emotion: targetMap[b[5]] || 'unknown'
+                            };
+                        });
+                    } else if (data.bbox && data.emotion && data.emotion !== 'none') {
+                        boxes = [{
+                            x: data.bbox.x,
+                            y: data.bbox.y,
+                            w: data.bbox.w,
+                            h: data.bbox.h,
+                            confidence: data.confidence,
+                            emotion: data.emotion
+                        }];
+                    }
+
+                    if (boxes.length > 0) {
                         lastBoxTime = now;
-                        drawBox(data.bbox, data.emotion, data.confidence);
-                        updateEmotionUI(data.emotion, data.confidence);
-                        addLog(data.emotion, data.confidence, data.raw);
+                        drawBoxes(boxes);
+                        const bestBox = boxes.reduce((prev, curr) => (prev.confidence > curr.confidence ? prev : curr));
+                        updateEmotionUI(bestBox.emotion, bestBox.confidence, boxes.length);
+                        addLog(bestBox.emotion, bestBox.confidence, data.raw);
                     } else {
                         if (now - lastBoxTime > 600) {
                             ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -671,56 +699,58 @@
             return m ? getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim() : '#4dff88';
         }
 
-        function drawBox(bbox, emotion, confidence) {
+        function drawBoxes(boxes) {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            if (!bbox) return;
-
-            const em = EMOTION_MAP[emotion] || EMOTION_MAP.unknown;
-            const color = getColor(em.color);
+            if (!boxes || !boxes.length) return;
 
             const natW = videoStream.naturalWidth || 320;
             const natH = videoStream.naturalHeight || 240;
             const scaleX = canvas.width / natW;
             const scaleY = canvas.height / natH;
 
-            const x = bbox.x * scaleX;
-            const y = bbox.y * scaleY;
-            const w = bbox.w * scaleX;
-            const h = bbox.h * scaleY;
+            boxes.forEach(b => {
+                const em = EMOTION_MAP[b.emotion] || EMOTION_MAP.unknown;
+                const color = getColor(em.color);
 
-            ctx.save();
-            ctx.shadowColor = color;
-            ctx.shadowBlur = 10;
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 3;
-            ctx.strokeRect(x, y, w, h);
-            ctx.restore();
+                const x = b.x * scaleX;
+                const y = b.y * scaleY;
+                const w = b.w * scaleX;
+                const h = b.h * scaleY;
 
-            const pct = Math.round((confidence || 0) * 100);
-            const label = `${em.name.toUpperCase()} ${pct}%`;
-            ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-            const metrics = ctx.measureText(label);
-            const badgeW = metrics.width + 14;
-            const badgeH = 24;
-            const badgeY = y >= badgeH + 4 ? y - badgeH - 2 : y + 2;
+                ctx.save();
+                ctx.shadowColor = color;
+                ctx.shadowBlur = 10;
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 3;
+                ctx.strokeRect(x, y, w, h);
+                ctx.restore();
 
-            ctx.fillStyle = color;
-            ctx.beginPath();
-            ctx.roundRect(x, badgeY, badgeW, badgeH, 4);
-            ctx.fill();
+                const pct = Math.round((b.confidence || 0) * 100);
+                const label = `${em.name.toUpperCase()} ${pct}%`;
+                ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                const metrics = ctx.measureText(label);
+                const badgeW = metrics.width + 14;
+                const badgeH = 24;
+                const badgeY = y >= badgeH + 4 ? y - badgeH - 2 : y + 2;
 
-            ctx.fillStyle = '#000000';
-            ctx.fillText(label, x + 7, badgeY + 16);
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.roundRect(x, badgeY, badgeW, badgeH, 4);
+                ctx.fill();
+
+                ctx.fillStyle = '#000000';
+                ctx.fillText(label, x + 7, badgeY + 16);
+            });
         }
 
-        function updateEmotionUI(emotion, confidence) {
+        function updateEmotionUI(emotion, confidence, catCount = 1) {
             const em = EMOTION_MAP[emotion] || EMOTION_MAP.unknown;
             const color = getColor(em.color);
             videoWrap.style.borderColor = color;
             videoWrap.style.boxShadow = `0 0 30px ${color}33`;
 
             const pct = Math.round((confidence || 0) * 100);
-            logEmotion.textContent = em.name;
+            logEmotion.textContent = catCount > 1 ? `${em.name} (${catCount} 隻貓)` : em.name;
             logEmotion.style.color = color;
             logConf.textContent = pct + '%';
             if (logRaw) logRaw.style.color = color;
