@@ -298,6 +298,12 @@ uint32_t getAlertCooldownRemainingSec() {
     return (ALERT_COOLDOWN_MS - (now - s_last_alert_time)) / 1000;
 }
 
+bool isDistressBoutActive() {
+    if (!s_bout_active) return false;
+    uint32_t now = millis();
+    return (now - s_last_distress_frame_ms < BOUT_GAP_TOLERANCE_MS);
+}
+
 void resetAlertCooldown() {
     s_last_alert_time = 0;
     s_alert_sent_for_current_bout = false;

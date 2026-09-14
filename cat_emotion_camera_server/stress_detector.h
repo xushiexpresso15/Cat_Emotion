@@ -29,6 +29,7 @@ struct StressReport {
 void initStressDetector();
 void updateStressSample(int emotion_class, float confidence);
 bool evaluateStressAnomaly(StressReport* report);
+bool isDistressBoutActive();
 float getCurrentStressScore();
 int getEstimatedCSSLevel();
 float getConsecutiveDistressSec();

@@ -240,6 +240,14 @@ static bool       s_has_latest_bbox = false;
 static BBoxCoords s_latest_distress_bbox = {0, 0, 0, 0, -1, 0.0f};
 static bool       s_has_latest_distress_bbox = false;
 
+// Dedicated Distress Snapshot Cache (guarantees Discord alert receives the 100% authentic distressed cat)
+static uint8_t*   s_distress_snapshot_buf = NULL;
+static size_t     s_distress_snapshot_len = 0;
+static size_t     s_distress_snapshot_cap = 0;
+static BBoxCoords s_distress_snapshot_bbox = {0, 0, 0, 0, -1, 0.0f};
+static bool       s_has_distress_snapshot = false;
+static uint32_t   s_distress_snapshot_time = 0;
+
 static void proxyCallback(const char* resp, size_t len) {
     static timeval timestamp;
     TickType_t     ticks = xTaskGetTickCount();
@@ -449,10 +457,44 @@ static void proxyCallback(const char* resp, size_t len) {
                         s_latest_distress_bbox.confidence = parsed_boxes[distress_idx].score / 100.0f;
                         s_has_latest_distress_bbox = true;
 
+                        // 100% AUTHENTICITY GUARANTEE:
+                        // Cache this exact distressed frame into dedicated PSRAM snapshot buffer.
+                        // Even if the camera subsequently points away to a focus/relax cat before the alert triggers,
+                        // this buffer preserves the genuine image and bbox of the distressed cat!
+                        if (s_distress_snapshot_buf == NULL) {
+                            s_distress_snapshot_cap = JPG_BUFFER_SIZE;
+                            s_distress_snapshot_buf = (uint8_t*)heap_caps_malloc(s_distress_snapshot_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                            if (!s_distress_snapshot_buf) {
+                                s_distress_snapshot_cap = 32768;
+                                s_distress_snapshot_buf = (uint8_t*)malloc(s_distress_snapshot_cap);
+                            }
+                        }
+
+                        uint32_t now_ms = millis();
+                        bool should_update_snapshot = false;
+                        if (!s_has_distress_snapshot) {
+                            should_update_snapshot = true;
+                        } else if (parsed_boxes[distress_idx].score >= (int)(s_distress_snapshot_bbox.confidence * 100.0f)) {
+                            should_update_snapshot = true;
+                        } else if (now_ms - s_distress_snapshot_time > 2000) {
+                            should_update_snapshot = true;
+                        }
+
+                        if (should_update_snapshot && s_distress_snapshot_buf != NULL && s_latest_jpeg_buf != NULL && s_latest_jpeg_len > 0 && s_latest_jpeg_len <= s_distress_snapshot_cap) {
+                            memcpy(s_distress_snapshot_buf, s_latest_jpeg_buf, s_latest_jpeg_len);
+                            s_distress_snapshot_len = s_latest_jpeg_len;
+                            s_distress_snapshot_bbox = s_latest_distress_bbox;
+                            s_has_distress_snapshot = true;
+                            s_distress_snapshot_time = now_ms;
+                        }
+
                         updateStressSample(parsed_boxes[distress_idx].target, parsed_boxes[distress_idx].score / 100.0f);
                     } else {
-                        // All detected cats are calm (Relax or Focus)
+                        // All detected cats in current frame are calm (Relax or Focus)
                         s_has_latest_distress_bbox = false;
+                        if (!isDistressBoutActive()) {
+                            s_has_distress_snapshot = false;
+                        }
                         updateStressSample(best_target, best_score);
                     }
 
@@ -519,23 +561,55 @@ void loopRemoteProxy() {
     // Evaluate stress anomaly on each loop cycle
     StressReport stress_rep;
     if (evaluateStressAnomaly(&stress_rep)) {
-        Serial.printf("[STRESS ALERT] Triggered! State: %s, CSS: %d, Score: %.2f, Duration: %.1fs\n",
-            getEmotionName(stress_rep.dominant_emotion),
+        uint32_t now = millis();
+        const uint8_t* alert_jpeg = nullptr;
+        size_t alert_jpeg_len = 0;
+        const BBoxCoords* alert_bbox = nullptr;
+
+        // 100% ACCURACY CONTRACT:
+        // Discord alert snapshot MUST represent the genuine cat in distress.
+        // Priority 1: Verified snapshot captured during this active distress bout (< 15s)
+        if (s_has_distress_snapshot && s_distress_snapshot_buf != nullptr && s_distress_snapshot_len > 0 && (now - s_distress_snapshot_time < 15000)) {
+            alert_jpeg = s_distress_snapshot_buf;
+            alert_jpeg_len = s_distress_snapshot_len;
+            alert_bbox = &s_distress_snapshot_bbox;
+        } else if (s_has_latest_distress_bbox && s_latest_jpeg_buf != nullptr && s_latest_jpeg_len > 0) {
+            // Priority 2: Current frame is actively in acute distress
+            alert_jpeg = s_latest_jpeg_buf;
+            alert_jpeg_len = s_latest_jpeg_len;
+            alert_bbox = &s_latest_distress_bbox;
+        }
+        // NOTE: If neither is valid (e.g. camera panned away and snapshot expired),
+        // alert_jpeg & alert_bbox remain NULL. We NEVER fall back to s_latest_bbox (which could be a calm/focus cat)!
+
+        // Ensure emotion label strictly matches the actual distressed snapshot
+        int alert_emotion_code = stress_rep.dominant_emotion;
+        if (alert_bbox != nullptr && alert_bbox->target >= 0) {
+            alert_emotion_code = alert_bbox->target;
+        }
+
+        Serial.printf("[STRESS ALERT] Triggered! State: %s, CSS: %d, Score: %.2f, Duration: %.1fs, Snapshot: %s\n",
+            getEmotionName(alert_emotion_code),
             stress_rep.css_level,
-            stress_rep.stress_index,
-            stress_rep.consecutive_distress_sec
-        );
-        sendDiscordStressAlert(
-            getEmotionName(stress_rep.dominant_emotion),
             stress_rep.stress_index,
             stress_rep.consecutive_distress_sec,
-            stress_rep.avg_confidence,
+            alert_jpeg ? "ATTACHED_DISTRESSED_CAT" : "TEXT_ONLY_NO_WRONG_IMAGE"
+        );
+
+        sendDiscordStressAlert(
+            getEmotionName(alert_emotion_code),
+            stress_rep.stress_index,
+            stress_rep.consecutive_distress_sec,
+            (alert_bbox != nullptr && alert_bbox->confidence > 0.0f) ? alert_bbox->confidence : stress_rep.avg_confidence,
             stress_rep.css_level,
             "https://cat-emo-live.onrender.com",
-            s_latest_jpeg_buf,
-            s_latest_jpeg_len,
-            s_has_latest_distress_bbox ? &s_latest_distress_bbox : (s_has_latest_bbox ? &s_latest_bbox : nullptr)
+            alert_jpeg,
+            alert_jpeg_len,
+            alert_bbox
         );
+
+        // Consume snapshot once alert is dispatched to avoid re-triggering with stale image
+        s_has_distress_snapshot = false;
     }
 
     uint32_t now = millis();
