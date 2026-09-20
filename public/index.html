@@ -325,10 +325,10 @@
     <!-- QR Code Modal -->
     <div class="modal-backdrop" id="qr-modal" onclick="closeQrModal(event)">
         <div class="modal-card" onclick="event.stopPropagation()">
-            <h3 style="margin-bottom: 8px;">掃描 QR Code 觀看</h3>
+            <h3 style="margin-bottom: 8px;">Scan QR Code to Watch</h3>
             <img id="qr-img" src="" alt="QR Code">
             <p id="qr-url"></p>
-            <button class="modal-close-btn" onclick="closeQrModal()">關閉</button>
+            <button class="modal-close-btn" onclick="closeQrModal()">Close</button>
         </div>
     </div>
 
@@ -750,7 +750,7 @@
             videoWrap.style.boxShadow = `0 0 30px ${color}33`;
 
             const pct = Math.round((confidence || 0) * 100);
-            logEmotion.textContent = catCount > 1 ? `${em.name} (${catCount} 隻貓)` : em.name;
+            logEmotion.textContent = catCount > 1 ? `${em.name} (${catCount} cats)` : em.name;
             logEmotion.style.color = color;
             logConf.textContent = pct + '%';
             if (logRaw) logRaw.style.color = color;
