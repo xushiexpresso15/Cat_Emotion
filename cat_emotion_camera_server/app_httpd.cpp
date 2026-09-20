@@ -208,11 +208,11 @@ void startRemoteProxy(Proto through = PROTO_UART) {
 inline uint16_t getMsgType(const char* resp, size_t len) {
     uint16_t type = MSG_TYPE_UNKNOWN;
 
-    if (strnstr(resp, MSG_REPLY_STR, len) != NULL) {
+    if (strnstr(resp, "\"type\":0", len) != NULL || strnstr(resp, "\"type\": 0", len) != NULL) {
         type |= MSG_TYPE_REPLY;
-    } else if (strnstr(resp, MSG_EVENT_STR, len) != NULL) {
+    } else if (strnstr(resp, "\"type\":1", len) != NULL || strnstr(resp, "\"type\": 1", len) != NULL) {
         type |= MSG_TYPE_EVENT;
-    } else if (strnstr(resp, MSG_LOGGI_STR, len) != NULL) {
+    } else if (strnstr(resp, "\"type\":2", len) != NULL || strnstr(resp, "\"type\": 2", len) != NULL) {
         type |= MSG_TYPE_LOGGI;
     } else {
         log_w("Unknown message type...");
@@ -232,6 +232,23 @@ inline uint16_t getCmdType(const char* resp, size_t len) {
 
     return type;
 }
+
+static inline const char* find_image_key(const char* buf, size_t len, size_t* key_len) {
+    const char* p = strnstr(buf, "\"image\":\"", len);
+    if (p != NULL) {
+        if (key_len) *key_len = 9; // strlen("\"image\":\"")
+        return p;
+    }
+    p = strnstr(buf, "\"image\": \"", len);
+    if (p != NULL) {
+        if (key_len) *key_len = 10; // strlen("\"image\": \"")
+        return p;
+    }
+    return NULL;
+}
+
+static volatile size_t s_proxy_callbacks = 0;
+static char s_last_resp_preview[256] = "None";
 
 static uint8_t*   s_latest_jpeg_buf = NULL;
 static size_t     s_latest_jpeg_len = 0;
@@ -258,6 +275,11 @@ static void proxyCallback(const char* resp, size_t len) {
         log_i("Response is empty...");
         return;
     }
+
+    s_proxy_callbacks++;
+    size_t preview_len = len < 250 ? len : 250;
+    memcpy(s_last_resp_preview, resp, preview_len);
+    s_last_resp_preview[preview_len] = '\0';
 
     uint16_t type = 0;
     type |= getMsgType(resp, len);
@@ -315,7 +337,9 @@ static void proxyCallback(const char* resp, size_t len) {
 
     static size_t frame_count = 0;
     static uint32_t s_last_cloud_frame_ms = 0;
-    bool has_image = (strnstr(resp, MSG_IMAGE_KEY, len) != NULL);
+    size_t img_key_len = 0;
+    const char* slice = find_image_key(resp, len, &img_key_len);
+    bool has_image = (slice != NULL);
     if (has_image) {
         frame_count++;
         g_total_frames = frame_count;
@@ -331,9 +355,8 @@ static void proxyCallback(const char* resp, size_t len) {
         }
 
         // 1. Decode JPEG binary
-        const char* slice = strnstr(resp, MSG_IMAGE_KEY MSG_QUOTE_STR, len);
         if (slice != NULL) {
-            size_t offset = (slice - resp) + strlen(MSG_IMAGE_KEY MSG_QUOTE_STR);
+            size_t offset = (slice - resp) + img_key_len;
             const char* data = resp + offset;
             const char* quote = strnstr(data, MSG_QUOTE_STR, len - offset);
             if (quote != NULL) {
@@ -635,6 +658,14 @@ void loopRemoteProxy() {
         }
     }
 
+    // Boot kick: keep nudging Himax WE2 until first frames arrive
+    static uint32_t s_last_boot_kick_ms = 0;
+    if (g_total_frames == 0 && (now > 3000) && (now - s_last_boot_kick_ms > 3500)) {
+        s_last_boot_kick_ms = now;
+        Serial.println("[PROXY WATCHDOG] Waiting for initial frames... Kicking AT+INVOKE=-1,0,0");
+        AI.write("AT+INVOKE=-1,0,0\r\n", 18);
+    }
+
     if (now - s_last_diag_ms > 2500) {
         s_last_diag_ms = now;
         uint32_t elapsed = (g_last_frame_millis > 0) ? (now - g_last_frame_millis) : 0;
@@ -754,9 +785,10 @@ static esp_err_t results_handler(httpd_req_t* req) {
         return httpd_resp_send(req, empty_res, strlen(empty_res));
     }
 
-    const char* img_head = strnstr((const char*)slot->data, MSG_IMAGE_KEY MSG_QUOTE_STR, slot->size);
+    size_t img_head_key_len = 0;
+    const char* img_head = find_image_key((const char*)slot->data, slot->size, &img_head_key_len);
     if (img_head != NULL) {
-        size_t offset = (img_head - (const char*)slot->data) + strlen(MSG_IMAGE_KEY MSG_QUOTE_STR);
+        size_t offset = (img_head - (const char*)slot->data) + img_head_key_len;
 
         bool        found_prefix_comma = false;
         const char* img_head_full      = img_head - strlen(MSG_COMMA_STR);
@@ -898,11 +930,12 @@ static esp_err_t stream_frame_handler(httpd_req_t* req) {
             }
         }
 
-        const char* slice = strnstr((const char*)slot->data, MSG_IMAGE_KEY MSG_QUOTE_STR, slot->size);
+        size_t img_slice_key_len = 0;
+        const char* slice = find_image_key((const char*)slot->data, slot->size, &img_slice_key_len);
         if (slice == NULL) {
             continue;
         }
-        size_t      offset = (slice - (const char*)slot->data) + strlen(MSG_IMAGE_KEY MSG_QUOTE_STR);
+        size_t      offset = (slice - (const char*)slot->data) + img_slice_key_len;
         const char* data   = (const char*)slot->data + offset;
         const char* quote  = strnstr(data, MSG_QUOTE_STR, slot->size - offset);
         if (quote == NULL) {
@@ -1463,6 +1496,8 @@ static esp_err_t status_handler(httpd_req_t* req) {
         "<p><b>Frames Received:</b> %u</p>"
         "<p><b>Last Frame Size:</b> %u bytes</p>"
         "<p><b>Last Frame Received:</b> %u ms ago</p>"
+        "<p><b>SSCMA Packets:</b> %u</p>"
+        "<p><b>Last Raw Packet:</b> <code style='font-size:11px;word-break:break-all;'>%s</code></p>"
         "<p><b>Stress Score:</b> %.2f (CSS Level %d)</p>"
         "<p><b>Sustained Distress:</b> %.1fs / 6.0s</p>"
         "<p><b>Alert Cooldown:</b> %s</p>"
@@ -1482,6 +1517,8 @@ static esp_err_t status_handler(httpd_req_t* req) {
         (unsigned int)g_total_frames,
         (unsigned int)g_last_frame_bytes,
         (unsigned int)elapsed,
+        (unsigned int)s_proxy_callbacks,
+        s_last_resp_preview,
         getCurrentStressScore(),
         getEstimatedCSSLevel(),
         getConsecutiveDistressSec(),
