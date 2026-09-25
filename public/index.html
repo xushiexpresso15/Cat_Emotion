@@ -289,7 +289,7 @@
 
     <div id="main-screen">
         <div class="video-container" id="video-wrap">
-            <img id="video-stream" alt="Cat Emotion Stream">
+            <canvas id="video-stream" aria-label="Cat Emotion Stream"></canvas>
             <canvas id="bbox-canvas"></canvas>
             <div class="status-indicator">
                 <span id="fps-display">0 fps</span>
@@ -360,7 +360,31 @@
         const canvas = document.getElementById('bbox-canvas');
         const ctx = canvas.getContext('2d');
         const videoStream = document.getElementById('video-stream');
+        const videoCtx = videoStream.getContext('2d', { alpha: false });
         const videoWrap = document.getElementById('video-wrap');
+        /* Decode JPEG to display RGB (let the browser do YCbCr→sRGB),
+         * then white-balance in linear light with the WDMA3 calibration.
+         * colorSpaceConversion:'none' left the frame in camera Y/G-heavy
+         * values, so channel gains could not un-green it. */
+        const srgbToLin = (c) => {
+            const x = c / 255;
+            return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+        };
+        const linToSrgb = (x) => {
+            const y = x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(Math.max(x, 0), 1 / 2.4) - 0.055;
+            const o = Math.round(y * 255);
+            return o < 0 ? 0 : o > 255 ? 255 : o;
+        };
+        const wbLutLin = (gain) => {
+            const t = new Uint8Array(256);
+            for (let i = 0; i < 256; i++) t[i] = linToSrgb(srgbToLin(i) * gain);
+            return t;
+        };
+        const lutR = wbLutLin(1.954);
+        const lutG = wbLutLin(1.0);
+        const lutB = wbLutLin(1.643);
+        let frameW = 320;
+        let frameH = 240;
         const connDot = document.getElementById('conn-dot');
         const fpsDisplay = document.getElementById('fps-display');
         const logFps = document.getElementById('log-fps');
@@ -381,11 +405,11 @@
             }
         }
         window.addEventListener('resize', resizeCanvas);
-        videoStream.addEventListener('load', resizeCanvas);
         resizeCanvas();
 
         let currentBlobUrl = null;
         let receivedWsFrame = false;
+        let wbLogged = false;
 
         let ws = null;
         let reconnectDelay = 1000;
@@ -534,13 +558,31 @@
                         lastFpsTime = now;
                     }
 
-                    const url = URL.createObjectURL(event.data);
-                    const prevUrl = currentBlobUrl;
-                    currentBlobUrl = url;
-                    videoStream.src = url;
-                    if (prevUrl) {
-                        setTimeout(() => URL.revokeObjectURL(prevUrl), 1000);
-                    }
+                    createImageBitmap(event.data).then((bmp) => {
+                        frameW = bmp.width || 320;
+                        frameH = bmp.height || 240;
+                        if (videoStream.width !== frameW || videoStream.height !== frameH) {
+                            videoStream.width = frameW;
+                            videoStream.height = frameH;
+                        }
+                        videoCtx.drawImage(bmp, 0, 0);
+                        const img = videoCtx.getImageData(0, 0, frameW, frameH);
+                        const d = img.data;
+                        for (let i = 0; i < d.length; i += 4) {
+                            d[i] = lutR[d[i]];
+                            d[i + 1] = lutG[d[i + 1]];
+                            d[i + 2] = lutB[d[i + 2]];
+                        }
+                        videoCtx.putImageData(img, 0, 0);
+                        bmp.close();
+                        resizeCanvas();
+                        if (!wbLogged) {
+                            wbLogged = true;
+                            addSystemLog('IMX519 linear white-balance on display', 'ok');
+                        }
+                    }).catch((err) => {
+                        console.error('frame decode failed', err);
+                    });
                     return;
                 }
 
@@ -703,8 +745,8 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             if (!boxes || !boxes.length) return;
 
-            const natW = videoStream.naturalWidth || 320;
-            const natH = videoStream.naturalHeight || 240;
+            const natW = frameW || 320;
+            const natH = frameH || 240;
             const scaleX = canvas.width / natW;
             const scaleY = canvas.height / natH;
 
