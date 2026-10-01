@@ -1,135 +1,136 @@
-# Cat Emotion Model v5（YOLOv8n，Grove Vision AI V2）
+# Cat Emotion Model v5 (YOLOv8n, Grove Vision AI V2)
 
-辨識貓咪四種情緒：**angry（生氣）/ focus（專注）/ relax（放鬆）/ scared（害怕）**，跑在 Seeed Grove Vision AI V2（Himax WiseEye2 HX6538，Ethos-U55 NPU）上。
+Detects a cat and classifies its emotion as **angry / focus / relax / scared**. Runs on the Seeed Grove Vision AI V2 (Himax WiseEye2 HX6538, Ethos-U55 NPU).
 
-這一版主要改進兩件事：
-1. **讓模型更能應付板子鏡頭的畫面**：訓練時模擬 4:3 畫面被壓成正方形、模糊、泛白低對比、JPEG 壓縮。
-2. **把人臉和背景當成「不是貓」來訓練**，減少把人認成貓的誤判。
+What is new in this version:
+1. **Robustness to the board camera.** Training simulates what the board actually sees: a 4:3 frame squashed to a square, blur, a washed-out low-contrast image, and JPEG compression.
+2. **Background and human-face images are trained as "not a cat"**, which reduces false detections on people.
 
 ---
 
-## 測試結果
+## Results
 
-資料切成 **train 80% / val 10% / test 10%**。test 從頭到尾沒有參與訓練，也沒有拿來挑模型，只在最後評估一次。
+The data is split **train 80% / val 10% / test 10%**. The test set was never used for training or model selection, and was evaluated only once.
 
-### mAP（PyTorch 浮點模型）
+### mAP (PyTorch float model)
 
-| 資料集 | Precision | Recall | mAP50 | mAP50-95 |
+| Set | Precision | Recall | mAP50 | mAP50-95 |
 |---|---|---|---|---|
 | Val | 82.5% | 82.0% | 85.3% | 66.3% |
 | **Test** | **84.0%** | **83.3%** | **89.8%** | **71.0%** |
-| Test（模擬板子鏡頭畫質） | 87.2% | 83.6% | 89.9% | 72.6% |
+| Test, simulated board camera | 87.2% | 83.6% | 89.9% | 72.6% |
 
-Test 各類別的 mAP50 / mAP50-95：
+Per-class test mAP50 / mAP50-95:
 
 | angry | focus | relax | scared |
 |---|---|---|---|
 | 96.9% / 79.5% | 82.7% / 65.7% | 89.3% / 68.9% | 90.3% / 69.9% |
 
-### 模擬板子實際運作（INT8 模型，分數門檻 0.25，NMS IoU 0.45）
+### Board-like evaluation (INT8 model, score threshold 0.25, NMS IoU 0.45)
 
-| 項目 | Test | Test（模擬鏡頭畫質） |
+| | Test | Test, simulated board camera |
 |---|---|---|
-| 背景誤判（沒有貓卻出框） | 0 / 40（0%） | 1 / 40（2.5%） |
-| 人臉誤判（把人當成貓） | 0 / 15（0%） | 0 / 15（0%） |
-| 貓咪偵測率 | 162 / 164（98.8%） | 161 / 164（98.2%） |
-| **情緒正確率** | **138 / 164（84.1%）** | **142 / 164（86.6%）** |
+| Background false positives | 0 / 40 (0%) | 1 / 40 (2.5%) |
+| Human-face false positives | 0 / 15 (0%) | 0 / 15 (0%) |
+| Cat detection rate | 162 / 164 (98.8%) | 161 / 164 (98.2%) |
+| **Emotion accuracy** | **138 / 164 (84.1%)** | **142 / 164 (86.6%)** |
 | angry / focus / relax / scared | 92.5 / 93.2 / 73.2 / 76.9% | 97.5 / 90.9 / 73.2 / 84.6% |
 
-> **注意：**
-> - Test 每種情緒只有約 40 張，數字大約有 ±4% 的誤差。
-> - 「模擬鏡頭畫質」是用程式模擬的，不是真的板子畫面。
-> - 目前最弱的類別是 **relax**，最常被誤判成 focus。
+> **Notes**
+> - The test set has about 40 images per class, so the numbers carry roughly ±4% noise.
+> - The "simulated board camera" set is generated in software. It is not real board footage.
+> - The weakest class is **relax**, which is most often confused with focus.
 
 ---
 
-## 硬體與模型規格
+## Model and hardware specs
 
-| 項目 | 內容 |
+| Item | Value |
 |---|---|
-| 架構 | YOLOv8n（SiLU），3.0M 參數 |
-| 輸入 | `[1, 192, 192, 3]` int8，RGB，scale 1/255、zero point -128 |
-| 輸出 0 | `[1, 4, 756]` int8：框 cx, cy, w, h，**0～1 正規化座標** |
-| 輸出 1 | `[1, 756, 4]` int8：四種情緒分數（0～1） |
-| 量化 | 全 INT8，用 300 張訓練集圖片做 calibration |
-| NPU 編譯 | Vela **3.9.0**，`ethos-u55-64`，`himax_vela.ini`（My_Sys_Cfg / My_Mem_Mode_Parent） |
-| NPU 佔比 | **100%**（0 個 CPU op，圖裡沒有 Transpose） |
-| SRAM 用量 | 948 KiB（韌體 tensor arena 1053 KiB） |
-| 板上每幀時間 | 約 99 ms（含拍攝影像，實測） |
-| 燒錄位置 | `0xB7B000` |
+| Architecture | YOLOv8n (SiLU), 3.0M parameters |
+| Input | `[1, 192, 192, 3]` int8, RGB, scale 1/255, zero point −128 |
+| Output 0 | `[1, 4, 756]` int8: boxes cx, cy, w, h, **normalized 0–1** |
+| Output 1 | `[1, 756, 4]` int8: emotion scores (0–1) |
+| Quantization | Full INT8, calibrated on 300 training images |
+| NPU compiler | Vela **3.9.0**, `ethos-u55-64`, `himax_vela.ini` (My_Sys_Cfg / My_Mem_Mode_Parent) |
+| NPU mapping | **100%** (0 CPU ops, no Transpose in the graph) |
+| SRAM used | 948 KiB (firmware tensor arena: 1053 KiB) |
+| Measured frame time | About 99 ms on the board, including image capture |
+| Flash address | `0xB7B000` |
 
-### 已驗證的韌體
+### Firmware compatibility
 
-- ✅ **Himax 官方 `tflm_yolov8_od`**（[Seeed_Grove_Vision_AI_Module_V2](https://github.com/HimaxWiseEyePlus/Seeed_Grove_Vision_AI_Module_V2)，`APP_TYPE = tflm_yolov8_od`）：已在板子上實測可以出框和情緒。
-  - 這個韌體會**直接把 output(0) 當成框**，所以框的輸出一定要排在第一個，順序反了板子會 BusFault 當機。這版已經排好了。
-  - 結果和畫面都從 USB 送出，可以直接在電腦上看。
-- ⚠️ **專案的 ESP32 韌體（`edge-model-himax` 分支的 `output.img`）**：**還沒有在板子上測過**。
-  - 那份韌體的原始碼把框當成像素座標（0～192）。如果實際測試發現框太小或位置不對，要改用像素座標的版本重新匯出：`3_export_and_compile.py --box-format pixel`。
+- ✅ **Himax official `tflm_yolov8_od`** ([Seeed_Grove_Vision_AI_Module_V2](https://github.com/HimaxWiseEyePlus/Seeed_Grove_Vision_AI_Module_V2), `APP_TYPE = tflm_yolov8_od`): tested on the board, and both boxes and emotions work.
+  - This firmware reads **`output(0)` as boxes** without checking the order. If the order were reversed, the board would crash with a BusFault. This model already puts the boxes first.
+  - Detection results and camera frames are both sent over USB, so you can watch them on a PC with `tools/board_view_cv.py`.
+- ⚠️ **Project ESP32 firmware** (`firmware/output.img` on this branch): **not yet tested on the board**.
+  - Its source code treats boxes as pixel coordinates (0–192).
+  - If boxes look too small or misplaced, re-export with pixel boxes: `training/3_export_and_compile.py --box-format pixel`.
 
 ---
 
-## 檔案
+## Files
 
-| 檔案 | 說明 |
+| File | Description |
 |---|---|
-| `cat_emotion_v5_vela.tflite` | Vela 編譯好、可以直接燒錄的模型（燒到 `0xB7B000`） |
-| `cat_emotion_v5_int8.tflite` | INT8 量化、Vela 編譯前的模型 |
-| `best.pt` | PyTorch 權重 |
-| `vela_summary.csv` | Vela 編譯報告 |
-| `MANIFEST.json` | 模型資訊 |
+| `cat_emotion_v5_vela.tflite` | Vela-compiled model, ready to flash to `0xB7B000` |
+| `cat_emotion_v5_int8.tflite` | INT8 TFLite model before Vela compilation |
+| `best.pt` | PyTorch weights |
+| `vela_summary.csv` | Vela compiler report |
+| `MANIFEST.json` | Model metadata |
 
 ---
 
-## 訓練方法
+## Training
 
-### 資料集
+The full pipeline and commands are in [`training/README.md`](../../training/README.md).
 
-| 類別 | train | val | test |
+### Dataset
+
+| Class | train | val | test |
 |---|---|---|---|
 | angry | 322 | 40 | 40 |
 | focus | 350 | 44 | 44 |
 | relax | 331 | 41 | 41 |
 | scared | 314 | 39 | 39 |
-| 背景（負樣本） | 319 | 40 | 40 |
-| 人臉（負樣本，訓練集重複 2 次） | 120 | 15 | 15 |
+| Background (negative) | 319 | 40 | 40 |
+| Human face (negative, repeated 2× in train) | 120 | 15 | 15 |
 
-- **框是自動標的**：用 COCO 預訓練的 YOLOv8x 找出貓的位置，再標上資料夾名稱對應的情緒。偵測不到、但是貓臉特寫的照片，就用整張圖當框。
-- **負樣本**：背景和人臉的標籤檔是空的，代表「這張圖沒有貓」。模型輸出仍然只有 4 類。
-- 所有圖片先**拉伸成正方形**，跟板子把畫面直接縮成 192×192 的方式一樣。
-- 人工排除了有問題的圖片：同一張圖出現在兩個情緒資料夾、背景照裡其實有貓、偵測不到而且貓只佔畫面一小部分的全身照。
+- **Boxes are auto-labeled.** A COCO-pretrained YOLOv8x finds the cat, and the box gets the emotion of its folder. Close-ups with no detection use the whole image as the box.
+- **Negatives** (background and faces) have empty label files, meaning "no cat here". The model still has 4 classes.
+- All images are **stretched to a square**, matching how the board squashes its frame to 192×192.
+- Images removed after hand inspection:
+  - duplicates that appear in two emotion folders,
+  - background photos that actually contain a cat,
+  - full-body shots the detector could not box.
 
-### 兩階段訓練（RTX 3060 約 15 分鐘）
+### Two-stage training (about 15 minutes on an RTX 3060)
 
-**Stage 1**：從 COCO `yolov8n.pt` 開始訓練 250 epochs
-- SGD，Cosine 學習率 0.01 → 0.001，最後 35 epochs 關閉 mosaic，imgsz 192，batch 64。
+- **Stage 1:** 250 epochs from COCO `yolov8n.pt`. SGD, cosine LR 0.01 → 0.001, mosaic closed for the last 35 epochs, imgsz 192, batch 64.
+- **Stage 2:** 25 epochs of fine-tuning. SGD, lr0 0.0003, no mosaic, box 7.5 / cls 1.5 / dfl 1.5.
+- **Loss changes** (based on the project's v8.2.0 MANIFEST):
+  - **Hard-negative suppression:** non-cat anchors scoring above 0.2 get a squared penalty, weight 1.0.
+  - **Emotion mutual exclusion:** a squared penalty when the 4 class scores sum above 1.
+  - TaskAlignedAssigner: alpha 0.6, beta 4.5.
+- **Camera simulation (new in v5):**
+  - random horizontal squash 0.70–1.00 (the 4:3 camera is squashed to a square),
+  - Gaussian or motion blur, and downscale-then-upscale,
+  - washed-out low contrast, desaturation, noise, and JPEG quality 30–85.
 
-**Stage 2**：低學習率微調 25 epochs
-- SGD，lr0 0.0003，關閉 mosaic，box 7.5 / cls 1.5 / dfl 1.5。
+### Export
 
-**Loss 修改**（參考專案 v8.2.0 MANIFEST）：
-- **困難負樣本懲罰**：不是貓的位置，只要分數超過 0.2 就加平方懲罰，權重 1.0。
-- **情緒互斥**：同一個位置四類分數加總超過 1 就加平方懲罰。
-- TaskAlignedAssigner 參數：alpha = 0.6、beta = 4.5。
-
-**鏡頭畫質模擬**（這一版新增）：
-- 隨機把內容橫向壓扁到 70～100%：鏡頭是 4:3，被壓成正方形。
-- 高斯模糊、晃動模糊，以及先縮小再放大來模擬低解析度。
-- 泛白、低對比、褪色、雜訊、JPEG 壓縮（品質 30～85）。
-
-### 匯出
-
-- 改寫 YOLOv8 偵測頭的匯出方式，全程使用 NHWC。DFL 用矩陣乘法，框的四個座標分開計算再串接，所以 TFLite 圖裡**完全沒有 Transpose**，Vela 3.9.0 可以 100% 放上 NPU。
-- 匯出程式會自動比對：改寫後的輸出要跟原本的 YOLOv8 一致，量化後的結果也要跟浮點模型一致。
+- The YOLOv8 detection head is rewritten for export in NHWC. DFL uses a matrix multiply, and the four box coordinates are computed separately and concatenated. As a result, the TFLite graph has **no Transpose op**, and Vela 3.9.0 maps it **100% to the NPU**.
+- The export script checks automatically that the rewritten head matches the original YOLOv8 output, and that the INT8 results match the float model.
 
 ---
 
-## 跟前幾版比較
+## Comparison with earlier versions
 
-都是 int8 模型、分數門檻 0.25，在模擬鏡頭畫質的驗證集上測的。
+All rows use the INT8 model with a score threshold of 0.25, on the simulated board-camera validation set.
 
-| 版本 | 主要改變 | 情緒正確率 | focus | scared |
+| Version | Main change | Emotion accuracy | focus | scared |
 |---|---|---|---|---|
-| v3 | 加入同學的 loss 和第二階段訓練方法 | 66.8% | 70.8% | 55.2% |
-| v4 / v5 | 再加上鏡頭畫質模擬 | 79.5% | 87.7% | 63.8% |
+| v3 | Added the project's loss changes and stage-2 settings | 66.8% | 70.8% | 55.2% |
+| v4 / v5 | Added camera simulation on top of v3 | 79.5% | 87.7% | 63.8% |
 
-v4 和 v5 的訓練方法完全相同。v5 改成 80/10/10 切分，所以才有獨立的 test set。
+v4 and v5 use exactly the same recipe. v5 was retrained on the 80/10/10 split so that it has a held-out test set.

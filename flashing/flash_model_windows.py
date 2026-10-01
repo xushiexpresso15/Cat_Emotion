@@ -63,10 +63,9 @@ def detect_ports():
             esp_port = p.device
     return grove_port, esp_port
 
-def flash(port=None, baudrate=DEFAULT_BAUD, with_firmware=False, firmware_only=False):
-    with_firmware = with_firmware or firmware_only
+def flash(port=None, baudrate=DEFAULT_BAUD, with_firmware=False):
     global send_bin_total_packets
-    if not firmware_only and not MODEL_PATH.exists():
+    if not MODEL_PATH.exists():
         print(f"❌ Error: Model file not found: {MODEL_PATH}")
         return False
     if with_firmware and not FW_PATH.exists():
@@ -299,8 +298,7 @@ if __name__ == "__main__":
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD, help="Baudrate (default: 921600)")
     parser.add_argument("--with-firmware", action="store_true", help="Also reflash output.img (Default: False)")
     parser.add_argument("--model", help="要燒錄的 *_vela.tflite")
-    parser.add_argument("--firmware", help="韌體 output.img 路徑（搭配 --with-firmware / --firmware-only）")
-    parser.add_argument("--firmware-only", action="store_true", help="只燒韌體到 0x0，不燒模型")
+    parser.add_argument("--firmware", help="韌體 output.img 路徑（搭配 --with-firmware）")
     parser.add_argument("--fast", action="store_true", help="縮短節流停頓（64 bytes 一段、0.5ms），出錯就拿掉這個參數重燒")
     args = parser.parse_args()
     if args.fast:
@@ -311,4 +309,4 @@ if __name__ == "__main__":
         FW_PATH = Path(args.firmware).resolve()
 
     actual_port = args.port or args.pos_port or None
-    flash(port=actual_port, baudrate=args.baud, with_firmware=args.with_firmware, firmware_only=args.firmware_only)
+    flash(port=actual_port, baudrate=args.baud, with_firmware=args.with_firmware)

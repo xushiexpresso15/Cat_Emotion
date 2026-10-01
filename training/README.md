@@ -1,82 +1,113 @@
-# 貓咪情緒模型 - Windows 桌機訓練流程
+# Cat Emotion Model – Training Pipeline (v5)
 
-目錄結構（`D:\catphotoclaudetraining`）：
+Reproducible pipeline used to train **model v5** (`model/v5/`): auto-labeling → two-stage training → INT8 export + Vela 3.9.0 compile → board-like evaluation.
+Tested on Windows 11 with an RTX 3060 (about 15 minutes of training).
+
+## 0. Environment
+
+Two Python virtual environments are used, because Vela 3.9.0 needs `numpy<2` and conflicts with the training stack.
+
+| Env | Packages |
+|---|---|
+| `train_env` (Python 3.12) | `torch` (CUDA build), `ultralytics`, `opencv-python`, `tensorflow<=2.19`, `tf_keras`, `onnx`, `onnxslim`, `onnxruntime`, `onnx2tf<1.29` (`--no-deps`), `sng4onnx`, `onnx_graphsurgeon`, `ai-edge-litert`, `flatbuffers`, `pyserial`, `xmodem==0.4.7` |
+| `vela_env` | `ethos-u-vela==3.9.0`, `numpy<2` |
+
+On Windows, `ethos-u-vela==3.9.0` only ships as source. It can be built with MinGW gcc by adding `[build_ext] compiler=mingw32` to its `setup.cfg` and then running `pip install --no-build-isolation .`.
+
+Expected dataset layout, one folder per class. The folder names are used as labels:
 
 ```
-dataset/            原始照片：angry/ focus/ relax/ scared/（貓）+ background/ asian face/（負樣本）
-training/training/  這裡的腳本
-train_env/          訓練環境（Python 3.12、PyTorch CUDA、ultralytics、tensorflow 2.19、onnx2tf）
-vela_env/           Vela 3.9.0 專用環境（需要 numpy<2，用 MinGW 從原始碼編譯）
+dataset/
+  angry/  focus/  relax/  scared/     # cat photos
+  background/                          # negatives: no cat
+  asian face/                          # negatives: human faces (not a cat)
 ```
 
-以下指令都在 `training/training/` 底下執行。
+All commands below are run inside `training/`.
 
-## 1. 自動標註
-
-```bat
-..\..\train_env\Scripts\python.exe 1_auto_label.py --input ../../dataset --output yolo_dataset
-```
-
-- 用 COCO 預訓練的 `yolov8x.pt` 抓貓的位置，框標成資料夾名稱的情緒。
-- `background/`、`asian face/` 是**負樣本**，標籤檔是空的，代表「這張圖沒有貓」。不會新增類別，模型輸出仍是 4 類。人臉在訓練集重複 2 次，加強「人不是貓」。
-- 所有圖片會**拉伸成 384x384 正方形**。板子韌體就是把鏡頭畫面直接拉伸成 192x192，這樣訓練看到的形狀跟板子一致。
-- `EXCLUDE` 清單是人工檢查後排除的圖，例如背景照裡有貓、偵測器抓不到而且貓只佔畫面一小部分的全身照。
-- 沒抓到貓但是特寫的照片，用整張圖當框，存一份在 `yolo_dataset/missed/` 可以抽查。
-
-## 2. 訓練（RTX 3060 約 25 分鐘）
-
-```bat
-..\..\train_env\Scripts\python.exe 2_train.py --data yolo_dataset/data.yaml --device 0
-```
-
-- **第一階段**：從 COCO `yolov8n.pt` 訓練 250 epochs。
-  - SGD、Cosine 學習率 0.01→0.001，最後 35 epochs 關 mosaic。
-  - 加上困難負樣本懲罰：不是貓的位置分數超過 0.2 就加平方懲罰，壓低背景和人臉的誤判。
-- **第二階段**：低學習率微調，關閉 mosaic。
-- `--recipe github`（預設）：再加上同學 GitHub 的做法，第三版就是用這個設定：
-  - assigner alpha=0.6、beta=4.5
-  - 情緒互斥 loss
-  - 第二階段 SGD、25 epochs
-- `--recipe v2`：第二版的設定。
-- 最終權重在 `runs/cat_emotion_stage2/weights/best.pt`。
-
-| 版本 | mAP50 | 板子門檻 0.5 下的貓咪偵測率 | 情緒正確率 | 背景／人臉誤判 |
-|---|---|---|---|---|
-| v2（`cat_emotion_vela_v2.tflite`） | 85.8% | **93.0%** | 77.5% | 0% / 0% |
-| v3（`cat_emotion_vela_v3.tflite`） | **89.3%** | 88.9% | 77.5% | 0% / 0% |
-
-## 3. 匯出 + 量化 + Vela 編譯
-
-```bat
-..\..\train_env\Scripts\python.exe 3_export_and_compile.py --weights runs/cat_emotion_stage2/weights/best.pt
-```
-
-產生 `cat_emotion_vela.tflite`，格式跟板子韌體（`cvapp_yolov8n_ob.cpp`）相容：
-
-| | shape | 內容 |
-|---|---|---|
-| 輸入 | [1,192,192,3] int8 | RGB |
-| 輸出 0 | [1,4,756] int8 | 框 cx,cy,w,h，192x192 上的**像素座標** |
-| 輸出 1 | [1,756,4] int8 | 4 種情緒分數（0~1） |
-
-- 匯出時把 YOLOv8 的偵測頭改寫成「全程 NHWC」，圖裡**沒有任何 Transpose**，Vela 3.9.0 編譯後 **100% 跑在 NPU**（韌體只註冊了 Transpose + Ethos-U，不支援其他 CPU op）。
-- 腳本會自動比對改寫的偵測頭跟原本 YOLOv8 的輸出一致，並檢查量化前後的結果。
-- Vela 一定用 **3.9.0** 加 Himax 設定檔 `himax_vela.ini`（My_Sys_Cfg / My_Mem_Mode_Parent）。
-
-## 4. 模擬板子評估
-
-```bat
-..\..\train_env\Scripts\python.exe 4_evaluate.py --model export_out/cat_emotion_int8.tflite
-```
-
-用 int8 模型、跟韌體一樣的門檻 0.5 和 NMS 0.45，在驗證集上算背景誤判、人臉誤判、貓咪偵測率、情緒正確率和混淆矩陣。
-
-## 5. 燒錄（Mac）
-
-把 `cat_emotion_vela.tflite` 傳到 Mac，覆蓋 `my_model/cat_emotion_v8_sota_vela.tflite`（先備份原本的），然後：
+## 1. Auto-label and split (80 / 10 / 10)
 
 ```bash
-./flash_my_model.sh
+python 1_auto_label.py --input <path-to-dataset> --output yolo_dataset
 ```
 
-**只燒模型，不要加 `--with-firmware`。** 燒完執行 `python3 server.py` 開網頁測試。
+- A COCO-pretrained **YOLOv8x** detects the cat. The box gets the emotion of its folder. Close-ups with no detection use the whole image as the box.
+- `background/` and `asian face/` become **negatives** with empty label files, so they mean "no cat here". The model still has 4 classes. Faces are repeated twice in the training set.
+- Images are **stretched to a 384×384 square**, the same way the board squashes its camera frame to 192×192.
+- Split is **train / val / test = 80 / 10 / 10**. `test` is only used once, at the very end.
+- Bad images found by hand inspection are listed in `EXCLUDE`. These include images that appear in two emotion folders, background photos that actually contain a cat, and full-body shots the detector cannot box.
+
+## 2. Train (two stages)
+
+```bash
+python 2_train.py --data yolo_dataset/data.yaml --device 0 --recipe github --camera-aug
+```
+
+- **Stage 1**
+  - 250 epochs from COCO `yolov8n.pt`.
+  - SGD, cosine LR 0.01 → 0.001, mosaic closed for the last 35 epochs, imgsz 192, batch 64.
+- **Stage 2**
+  - 25 epochs of low-LR fine-tuning: SGD lr0 0.0003, no mosaic.
+- **Loss additions**
+  - Hard-negative suppression: non-cat anchors scoring above 0.20 get a squared penalty.
+  - Emotion mutual-exclusion: class scores summing above 1 get a squared penalty.
+- `--recipe` picks the training settings:
+  - `github` (default): TaskAlignedAssigner alpha 0.6 / beta 4.5, the mutual-exclusion loss, and a stage-2 SGD for 25 epochs. These follow the project's v8.2.0 MANIFEST and `best.pt` training arguments.
+  - `v2`: Ultralytics default assigner, no mutual-exclusion loss, and a stage-2 AdamW for 30 epochs.
+- `--camera-aug` turns on **board camera simulation** (`camera_sim.py`):
+  - Random horizontal squash 0.70–1.00, because the 4:3 camera is squashed to a square.
+  - Gaussian or motion blur, downscaling, washed-out low contrast, desaturation, noise, and JPEG quality 30–85.
+  - Boxes are updated together with the image.
+- Output weights: `runs/cat_emotion_stage2/weights/best.pt`
+
+## 3. Export + INT8 + Vela
+
+```bash
+python 3_export_and_compile.py --weights runs/cat_emotion_stage2/weights/best.pt --data-dir yolo_dataset --box-format normalized --vela <path-to-vela_env>/Scripts/vela.exe
+```
+
+The output is `cat_emotion_vela.tflite`, which is flashed to `0xB7B000`.
+
+| | Shape | Content |
+|---|---|---|
+| Input | [1,192,192,3] int8 | RGB, scale 1/255, zero point −128 |
+| Output 0 | [1,4,756] int8 | Boxes cx, cy, w, h |
+| Output 1 | [1,756,4] int8 | 4 emotion scores (0–1) |
+
+- `--box-format` must match the firmware that reads the boxes:
+  - `normalized` (0–1) for the **Himax official `tflm_yolov8_od`** firmware, which multiplies the boxes by 192 itself.
+  - `pixel` (0–192) for firmware that uses the values directly as pixels.
+- The boxes tensor is always placed **first**. The official firmware reads `output(0)` as boxes and crashes with a BusFault if the order is reversed.
+- The YOLOv8 head is rewritten in NHWC: DFL uses a matmul, and the box coordinates are concatenated on axis 1. As a result, the TFLite graph has **no Transpose op** and Vela 3.9.0 maps **100% of it to the NPU**.
+- INT8 calibration uses 300 training images: cats, background and faces.
+- The script checks automatically that the rewritten head matches the original Ultralytics output, and compares float vs INT8 results.
+- Vela settings: version **3.9.0**, `himax_vela.ini`, `ethos-u55-64`, `My_Sys_Cfg`, `My_Mem_Mode_Parent`.
+
+## 4. Board-like evaluation
+
+```bash
+SCORE_TH=0.25 python 4_evaluate.py --model export_out/cat_emotion_int8.tflite --data-dir yolo_dataset --split test
+```
+
+- Uses the INT8 model with the same post-processing as the firmware: score threshold from `SCORE_TH`, class-agnostic NMS at IoU 0.45.
+- Reports background and face false positives, the cat detection rate, emotion accuracy and a confusion matrix.
+
+## Results (model v5, held-out test set)
+
+| | mAP50 | mAP50-95 | Emotion accuracy (INT8, score ≥ 0.25) | Background FP | Face FP |
+|---|---|---|---|---|---|
+| Val | 85.3% | 66.3% | – | – | – |
+| **Test** | **89.8%** | **71.0%** | **84.1%** | 0/40 | 0/15 |
+| Test, simulated board camera | 89.9% | 72.6% | 86.6% | 1/40 | 0/15 |
+
+Per-class test mAP50: angry 96.9%, focus 82.7%, relax 89.3%, scared 90.3%.
+The test set has about 40 images per class, so expect roughly ±4% noise.
+
+## Flashing (Windows)
+
+```bash
+python ../flashing/flash_model_windows.py --port COM4 --fast --model cat_emotion_vela.tflite
+```
+
+- The Windows CH343 driver sends data too fast for the bootloader. The flasher therefore throttles each XMODEM packet and waits up to 60 seconds for an ACK, because the board pauses for several seconds every 1 MB to write flash.
+- `--fast` takes about 2m20s for a 2.8 MB model. Leave out `--fast` for the slower, most conservative timing.
