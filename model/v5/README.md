@@ -4,7 +4,9 @@ Detects a cat and classifies its emotion as **angry / focus / relax / scared**. 
 
 What is new in this version:
 1. **Robustness to the board camera.** Training simulates what the board actually sees: a 4:3 frame squashed to a square, blur, a washed-out low-contrast image, and JPEG compression.
-2. **Background and human-face images are trained as "not a cat"**, which reduces false detections on people.
+2. **🆕 Human-face negatives (new in v5).** Earlier versions sometimes detected people as cats, and their hard negatives only covered room backgrounds and objects such as airplane engines and clocks.
+   - v5 adds **150 human-face photos** labeled as "no cat" (train 120, repeated 2×; val 15; test 15), together with 400 background photos.
+   - Result: **0 / 15 faces detected as a cat** on the held-out test set.
 
 ---
 
@@ -131,6 +133,6 @@ All rows use the INT8 model with a score threshold of 0.25, on the simulated boa
 | Version | Main change | Emotion accuracy | focus | scared |
 |---|---|---|---|---|
 | v3 | Added the project's loss changes and stage-2 settings | 66.8% | 70.8% | 55.2% |
-| v4 / v5 | Added camera simulation on top of v3 | 79.5% | 87.7% | 63.8% |
+| v4 / v5 | Added camera simulation on top of v3 (human-face negatives used in all of v1–v5) | 79.5% | 87.7% | 63.8% |
 
 v4 and v5 use exactly the same training settings. v5 was retrained on the 80/10/10 split so that it has a held-out test set.

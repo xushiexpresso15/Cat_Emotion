@@ -3,6 +3,12 @@
   "name": "yolov8n_cat_emotion_v5_camsim",
   "created_at": "2026-10-01",
   "architecture_note": "YOLOv8n (SiLU) trained with board-camera simulation augmentation (4:3 squash, blur, washed-out low contrast, JPEG) and hard-negative suppression on background / human-face negatives. Transpose-free NHWC detection head for 100% Ethos-U55 NPU mapping with Vela 3.9.0.",
+  "new_in_v5": [
+    "human-face negatives: 150 face photos labeled as no-cat (train 120 x2, val 15, test 15) to stop people being detected as cats",
+    "board camera simulation augmentation",
+    "held-out 80/10/10 test split",
+    "transpose-free export head, 100% NPU with Vela 3.9.0"
+  ],
   "dataset": {
     "split": "train 80% / val 10% / test 10%",
     "train_cat_images": 1317,
