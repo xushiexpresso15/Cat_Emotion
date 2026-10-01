@@ -71,7 +71,7 @@
   },
   "firmware_compatibility": {
     "himax_official_tflm_yolov8_od": "verified on board (boxes + emotions over USB)",
-    "project_esp32_firmware_output_img": "not yet verified on board; if boxes look wrong, re-export with --box-format pixel"
+    "project_esp32_firmware_output_img": "not yet verified on board; its source expects pixel boxes (0-192) while this model outputs normalized 0-1 boxes"
   },
   "files": {
     "vela_model": "cat_emotion_v5_vela.tflite",

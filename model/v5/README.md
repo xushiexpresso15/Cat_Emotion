@@ -64,8 +64,8 @@ Per-class test mAP50 / mAP50-95:
   - This firmware reads **`output(0)` as boxes** without checking the order. If the order were reversed, the board would crash with a BusFault. This model already puts the boxes first.
   - Detection results and camera frames are both sent over USB, so you can watch them on a PC with `tools/board_view_cv.py`.
 - ⚠️ **Project ESP32 firmware** (`firmware/output.img` on this branch): **not yet tested on the board**.
-  - Its source code treats boxes as pixel coordinates (0–192).
-  - If boxes look too small or misplaced, re-export with pixel boxes: `training/3_export_and_compile.py --box-format pixel`.
+  - Its source code treats boxes as pixel coordinates (0–192), while this model outputs normalized 0–1 boxes.
+  - Boxes may therefore look too small on that firmware. If so, the export needs to output pixel coordinates (multiply the boxes by 192) and the model must be re-exported.
 
 ---
 
@@ -133,4 +133,4 @@ All rows use the INT8 model with a score threshold of 0.25, on the simulated boa
 | v3 | Added the project's loss changes and stage-2 settings | 66.8% | 70.8% | 55.2% |
 | v4 / v5 | Added camera simulation on top of v3 | 79.5% | 87.7% | 63.8% |
 
-v4 and v5 use exactly the same recipe. v5 was retrained on the 80/10/10 split so that it has a held-out test set.
+v4 and v5 use exactly the same training settings. v5 was retrained on the 80/10/10 split so that it has a held-out test set.

@@ -2,9 +2,9 @@
 """
 Step 3: 把訓練好的 best.pt 匯出成板子韌體吃的 int8 TFLite，再用 Vela 3.9.0 編譯成可燒錄的 *_vela.tflite。
 
-板子韌體（cvapp_yolov8n_ob.cpp）要求的格式（跟目前板子上的模型一致）：
+Himax 官方 tflm_yolov8_od 韌體（cvapp_yolov8n_ob.cpp）要求的格式：
     輸入   : [1, 192, 192, 3] int8（RGB，scale 1/255、zero_point -128）
-    輸出 0 : [1, 4, 756]  int8  框 = [cx, cy, w, h]，單位是 192x192 輸入上的「像素」
+    輸出 0 : [1, 4, 756]  int8  框 = [cx, cy, w, h]，0~1 正規化座標（韌體會自己乘上 192）
     輸出 1 : [1, 756, 4]  int8  四種情緒的分數（sigmoid 後 0~1）
     韌體只註冊了 Transpose + Ethos-U 兩種 op -> 其他所有 op 都必須跑在 NPU 上
 
@@ -15,7 +15,7 @@ Step 3: 把訓練好的 best.pt 匯出成板子韌體吃的 int8 TFLite，再用
 用法（train_env 環境）：
     python 3_export_and_compile.py --weights runs/cat_emotion_stage2/weights/best.pt
 
-Vela 裝在另一個環境 vela_env（需要 numpy<2），腳本會自動呼叫 ../../vela_env/Scripts/vela.exe。
+Vela 3.9.0 裝在另一個環境 vela_env（需要 numpy<2），用 --vela 指定 vela 執行檔路徑。
 
 輸出：
     export_out/cat_emotion_int8.tflite   <- 量化但還沒 Vela 編譯
@@ -43,7 +43,7 @@ def imread_rgb(path, size=IMGSZ):
     return cv2.cvtColor(cv2.resize(im, (size, size), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB)
 
 
-def build_export_model(weights, box_format="pixel"):
+def build_export_model(weights):
     """把 Detect 頭換成「全程 channel-last」的寫法，讓 onnx2tf 轉出來的圖完全沒有 Transpose。
 
     原本 YOLOv8 的頭是 NCHW：x.view(bs, C, -1) 攤平、DFL 在 channel 維做 softmax、最後再 permute，
@@ -83,10 +83,8 @@ def build_export_model(weights, box_format="pixel"):
         h = (t + b) * s
         boxes = torch.cat([v.reshape(1, 1, -1) for v in (cx, cy, w, h)], 1)  # (1, 4, 756) 像素 cxcywh
         # 限制在 0~192：輸出的量化範圍變小，int8 每一格約 0.75 px（不限制的話會被離譜的大框撐到 2 px 以上）
-        boxes = boxes.clamp(0, IMGSZ)
-        if box_format == "normalized":
-            # Himax 官方 tflm_yolov8_od 韌體會自己把框乘上 192，所以要輸出 0~1
-            boxes = boxes * (1.0 / IMGSZ)
+        # Himax 官方 tflm_yolov8_od 韌體會自己把框乘上 192，所以輸出 0~1
+        boxes = boxes.clamp(0, IMGSZ) * (1.0 / IMGSZ)
         return boxes, cls.sigmoid()  # (1, 756, 4)
 
     orig = types.MethodType(type(detect).forward, detect)
@@ -102,7 +100,7 @@ def build_export_model(weights, box_format="pixel"):
         ref = model(im)
         ref = ref[0] if isinstance(ref, (tuple, list)) else ref  # (1, 4+nc, 756)
         detect.forward = types.MethodType(forward, detect)
-    ref_boxes = ref[:, :4].clamp(0, IMGSZ) / (IMGSZ if box_format == "normalized" else 1)
+    ref_boxes = ref[:, :4].clamp(0, IMGSZ) / IMGSZ
     assert torch.allclose(new_boxes, ref_boxes, atol=1e-3), (new_boxes - ref_boxes).abs().max()
     assert torch.allclose(new_scores, ref[:, 4:].permute(0, 2, 1), atol=1e-5)
     return model
@@ -150,7 +148,6 @@ def fix_transpose_quant(src, dst):
                 fixed += 1
         # 輸出順序固定成「框 [1,4,756] 在前、分數 [1,756,4] 在後」：
         # Himax 官方 tflm_yolov8_od 韌體直接把 output(0) 當框讀，順序反了會寫爆陣列導致 BusFault 當機
-        # （同學的韌體有自動交換，兩種順序都能用）
         outs = list(g.outputs)
         outs.sort(key=lambda i: 0 if list(g.tensors[i].shape)[1] == 4 else 1)
         g.outputs = outs
@@ -201,8 +198,6 @@ def main():
     ap.add_argument("--data-dir", default="yolo_dataset", help="1_auto_label.py 產生的資料集（做 int8 校正用）")
     ap.add_argument("--calib", type=int, default=300, help="校正圖片張數")
     ap.add_argument("--output", default="cat_emotion_vela.tflite")
-    ap.add_argument("--box-format", choices=["pixel", "normalized"], default="pixel",
-                    help="pixel = 同學的韌體（框是 192x192 像素座標）；normalized = Himax 官方 tflm_yolov8_od 韌體（框是 0~1）")
     ap.add_argument("--out-dir", default="export_out")
     ap.add_argument("--vela", default=str(HERE.parent.parent / "vela_env" / "Scripts" / "vela.exe"))
     args = ap.parse_args()
@@ -213,7 +208,7 @@ def main():
     out_dir.mkdir()
 
     print("=== 1. 匯出 ONNX（雙輸出：框 [1,4,756] 像素座標 + 分數 [1,756,4]）===")
-    model = build_export_model(args.weights, args.box_format)
+    model = build_export_model(args.weights)
     onnx_path = out_dir / "cat_emotion.onnx"
     export_onnx(model, onnx_path)
 

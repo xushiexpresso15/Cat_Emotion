@@ -40,7 +40,7 @@ python 1_auto_label.py --input <path-to-dataset> --output yolo_dataset
 ## 2. Train (two stages)
 
 ```bash
-python 2_train.py --data yolo_dataset/data.yaml --device 0 --recipe github --camera-aug
+python 2_train.py --data yolo_dataset/data.yaml --device 0
 ```
 
 - **Stage 1**
@@ -51,10 +51,9 @@ python 2_train.py --data yolo_dataset/data.yaml --device 0 --recipe github --cam
 - **Loss additions**
   - Hard-negative suppression: non-cat anchors scoring above 0.20 get a squared penalty.
   - Emotion mutual-exclusion: class scores summing above 1 get a squared penalty.
-- `--recipe` picks the training settings:
-  - `github` (default): TaskAlignedAssigner alpha 0.6 / beta 4.5, the mutual-exclusion loss, and a stage-2 SGD for 25 epochs. These follow the project's v8.2.0 MANIFEST and `best.pt` training arguments.
-  - `v2`: Ultralytics default assigner, no mutual-exclusion loss, and a stage-2 AdamW for 30 epochs.
-- `--camera-aug` turns on **board camera simulation** (`camera_sim.py`):
+  - TaskAlignedAssigner alpha 0.6 / beta 4.5.
+  - These follow the project's v8.2.0 MANIFEST and the training arguments stored in its `best.pt`.
+- **Board camera simulation** (`camera_sim.py`) is always on:
   - Random horizontal squash 0.70–1.00, because the 4:3 camera is squashed to a square.
   - Gaussian or motion blur, downscaling, washed-out low contrast, desaturation, noise, and JPEG quality 30–85.
   - Boxes are updated together with the image.
@@ -63,7 +62,7 @@ python 2_train.py --data yolo_dataset/data.yaml --device 0 --recipe github --cam
 ## 3. Export + INT8 + Vela
 
 ```bash
-python 3_export_and_compile.py --weights runs/cat_emotion_stage2/weights/best.pt --data-dir yolo_dataset --box-format normalized --vela <path-to-vela_env>/Scripts/vela.exe
+python 3_export_and_compile.py --weights runs/cat_emotion_stage2/weights/best.pt --data-dir yolo_dataset --vela <path-to-vela_env>/Scripts/vela.exe
 ```
 
 The output is `cat_emotion_vela.tflite`, which is flashed to `0xB7B000`.
@@ -71,12 +70,10 @@ The output is `cat_emotion_vela.tflite`, which is flashed to `0xB7B000`.
 | | Shape | Content |
 |---|---|---|
 | Input | [1,192,192,3] int8 | RGB, scale 1/255, zero point −128 |
-| Output 0 | [1,4,756] int8 | Boxes cx, cy, w, h |
+| Output 0 | [1,4,756] int8 | Boxes cx, cy, w, h (normalized 0–1) |
 | Output 1 | [1,756,4] int8 | 4 emotion scores (0–1) |
 
-- `--box-format` must match the firmware that reads the boxes:
-  - `normalized` (0–1) for the **Himax official `tflm_yolov8_od`** firmware, which multiplies the boxes by 192 itself.
-  - `pixel` (0–192) for firmware that uses the values directly as pixels.
+- Boxes are **normalized 0–1**, as expected by the **Himax official `tflm_yolov8_od`** firmware, which multiplies them by 192 itself.
 - The boxes tensor is always placed **first**. The official firmware reads `output(0)` as boxes and crashes with a BusFault if the order is reversed.
 - The YOLOv8 head is rewritten in NHWC: DFL uses a matmul, and the box coordinates are concatenated on axis 1. As a result, the TFLite graph has **no Transpose op** and Vela 3.9.0 maps **100% of it to the NPU**.
 - INT8 calibration uses 300 training images: cats, background and faces.
