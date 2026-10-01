@@ -1,0 +1,88 @@
+{
+  "version": "v5.0.0-camsim",
+  "name": "yolov8n_cat_emotion_v5_camsim",
+  "created_at": "2026-10-01",
+  "architecture_note": "YOLOv8n (SiLU) trained with board-camera simulation augmentation (4:3 squash, blur, washed-out low contrast, JPEG) and hard-negative suppression on background / human-face negatives. Transpose-free NHWC detection head for 100% Ethos-U55 NPU mapping with Vela 3.9.0.",
+  "new_in_v5": [
+    "human-face negatives: 150 face photos labeled as no-cat (train 120 x2, val 15, test 15) to stop people being detected as cats",
+    "board camera simulation augmentation",
+    "held-out 80/10/10 test split",
+    "transpose-free export head, 100% NPU with Vela 3.9.0"
+  ],
+  "dataset": {
+    "split": "train 80% / val 10% / test 10%",
+    "train_cat_images": 1317,
+    "val_cat_images": 164,
+    "test_cat_images": 164,
+    "negatives": "background + human faces (empty labels), test: 40 background + 15 faces",
+    "labeling": "auto bounding boxes from COCO YOLOv8x (cat class), emotion from folder name; images stretched to square like the board"
+  },
+  "training_protocol": {
+    "initialization": "COCO pre-trained yolov8n.pt",
+    "stage_1_epochs": 250,
+    "stage_1_optimizer": "SGD, cosine lr 0.01 -> 0.001, close_mosaic 35, batch 64, imgsz 192",
+    "stage_2_epochs": 25,
+    "stage_2_optimizer": "SGD lr0 0.0003, no mosaic, box 7.5 / cls 1.5 / dfl 1.5",
+    "loss_type": "Hard-negative suppression (~fg_mask, thresh 0.20, weight 1.0) + emotion mutual-exclusion penalty + TaskAlignedAssigner (alpha 0.6, beta 4.5)",
+    "augmentation": "camera simulation: horizontal squash 0.70-1.00, gaussian/motion blur, downscale, washed-out low contrast, desaturation, noise, JPEG q30-85"
+  },
+  "metrics": {
+    "val_mAP50": 85.3,
+    "val_mAP50_95": 66.3,
+    "test_mAP50": 89.8,
+    "test_mAP50_95": 71.0,
+    "test_precision": 84.0,
+    "test_recall": 83.3,
+    "test_camsim_mAP50": 89.9,
+    "test_camsim_mAP50_95": 72.6,
+    "test_per_class_mAP50": {"angry": 96.9, "focus": 82.7, "relax": 89.3, "scared": 90.3},
+    "board_like_int8_score_0.25": {
+      "emotion_accuracy_test": 84.1,
+      "emotion_accuracy_test_camsim": 86.6,
+      "cat_detection_rate_test": 98.8,
+      "background_false_positives_test": "0/40",
+      "human_face_false_positives_test": "0/15"
+    }
+  },
+  "hardware": {
+    "chip": "Himax WiseEye2 HX6538",
+    "npu": "Arm Ethos-U55 @ 400MHz (64 MACs)",
+    "baudrate": 921600,
+    "model_flash_addr": "0x00B7B000",
+    "memory_mapped_addr": "0x3AB7B000",
+    "sram_used_kib": 947.95,
+    "tensor_arena_kib": 1053,
+    "npu_operators": "100%",
+    "cpu_operators": 0,
+    "measured_frame_time_ms": 99,
+    "vela_version": "3.9.0",
+    "vela_config": "himax_vela.ini, ethos-u55-64, My_Sys_Cfg, My_Mem_Mode_Parent"
+  },
+  "model": {
+    "input_shape": [1, 192, 192, 3],
+    "input_type": "int8",
+    "input_scale": 0.003921568859368563,
+    "input_zero_point": -128,
+    "classes": ["angry", "focus", "relax", "scared"],
+    "num_classes": 4,
+    "output_0_shape": [1, 4, 756],
+    "output_0_content": "boxes cx, cy, w, h normalized 0-1",
+    "output_0_scale": 0.003921568859368563,
+    "output_0_zero_point": -128,
+    "output_1_shape": [1, 756, 4],
+    "output_1_content": "emotion scores 0-1",
+    "output_1_scale": 0.00390625,
+    "output_1_zero_point": -128,
+    "model_size_bytes": 2803920
+  },
+  "firmware_compatibility": {
+    "himax_official_tflm_yolov8_od": "verified on board (boxes + emotions over USB)",
+    "project_esp32_firmware_output_img": "not yet verified on board; its source expects pixel boxes (0-192) while this model outputs normalized 0-1 boxes"
+  },
+  "files": {
+    "vela_model": "cat_emotion_v5_vela.tflite",
+    "tflite_model": "cat_emotion_v5_int8.tflite",
+    "pytorch_weights": "best.pt",
+    "vela_summary": "vela_summary.csv"
+  }
+}
