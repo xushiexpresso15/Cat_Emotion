@@ -35,13 +35,32 @@
     "test_recall": 83.3,
     "test_camsim_mAP50": 89.9,
     "test_camsim_mAP50_95": 72.6,
-    "test_per_class_mAP50": {"angry": 96.9, "focus": 82.7, "relax": 89.3, "scared": 90.3},
-    "board_like_int8_score_0.25": {
+    "test_per_class_mAP50": {
+      "angry": 96.9,
+      "focus": 82.7,
+      "relax": 89.3,
+      "scared": 90.3
+    },
+    "board_like_int8_score_0.5_project_firmware": {
+      "emotion_accuracy_test": 81.7,
+      "emotion_accuracy_test_camsim": 81.7,
+      "cat_detection_rate_test": 94.5,
+      "cat_detection_rate_test_camsim": 92.7,
+      "background_false_positives_test": "0/40",
+      "human_face_false_positives_test": "0/15"
+    },
+    "board_like_int8_score_0.25_official_firmware": {
       "emotion_accuracy_test": 84.1,
       "emotion_accuracy_test_camsim": 86.6,
       "cat_detection_rate_test": 98.8,
       "background_false_positives_test": "0/40",
-      "human_face_false_positives_test": "0/15"
+      "human_face_false_positives_test": "0/15",
+      "background_false_positives_test_camsim": "1/40",
+      "human_face_false_positives_test_camsim": "0/15"
+    },
+    "reproduce": {
+      "board_like": "python training/4_evaluate.py --model model/v5/<int8>.tflite --data-dir yolo_dataset --split test --score <0.5|0.25> [--camsim]",
+      "camsim_map": "python training/make_camsim_dataset.py --src yolo_dataset --dst yolo_dataset_camsim; yolo val model=model/v5/best.pt data=yolo_dataset_camsim/data.yaml split=test imgsz=192 iou=0.45"
     }
   },
   "hardware": {
@@ -59,29 +78,66 @@
     "vela_config": "himax_vela.ini, ethos-u55-64, My_Sys_Cfg, My_Mem_Mode_Parent"
   },
   "model": {
-    "input_shape": [1, 192, 192, 3],
+    "input_shape": [
+      1,
+      192,
+      192,
+      3
+    ],
     "input_type": "int8",
     "input_scale": 0.003921568859368563,
     "input_zero_point": -128,
-    "classes": ["angry", "focus", "relax", "scared"],
+    "classes": [
+      "angry",
+      "focus",
+      "relax",
+      "scared"
+    ],
     "num_classes": 4,
-    "output_0_shape": [1, 4, 756],
-    "output_0_content": "boxes cx, cy, w, h normalized 0-1",
-    "output_0_scale": 0.003921568859368563,
+    "output_0_shape": [
+      1,
+      4,
+      756
+    ],
+    "output_0_content": "boxes cx, cy, w, h; pixel 0-192 (cat_emotion_v5_vela.tflite) or normalized 0-1 (*_himax_official)",
+    "output_0_scale": {
+      "pixel": 0.7529411911964417,
+      "normalized": 0.003921568859368563
+    },
     "output_0_zero_point": -128,
-    "output_1_shape": [1, 756, 4],
+    "output_1_shape": [
+      1,
+      756,
+      4
+    ],
     "output_1_content": "emotion scores 0-1",
     "output_1_scale": 0.00390625,
     "output_1_zero_point": -128,
-    "model_size_bytes": 2803920
+    "model_size_bytes": {
+      "cat_emotion_v5_vela.tflite": 2803872,
+      "cat_emotion_v5_vela_himax_official.tflite": 2803920
+    }
   },
   "firmware_compatibility": {
-    "himax_official_tflm_yolov8_od": "verified on board (boxes + emotions over USB)",
-    "project_esp32_firmware_output_img": "not yet verified on board; its source expects pixel boxes (0-192) while this model outputs normalized 0-1 boxes"
+    "project_esp32_firmware": {
+      "firmware": "firmware/output.img",
+      "model": "cat_emotion_v5_vela.tflite",
+      "box_format": "pixel 0-192",
+      "score_threshold": 0.5
+    },
+    "himax_official_tflm_yolov8_od": {
+      "firmware": "firmware/himax_official_tflm_yolov8_od/output.img",
+      "model": "cat_emotion_v5_vela_himax_official.tflite",
+      "box_format": "normalized 0-1",
+      "score_threshold": 0.25
+    },
+    "guard": "flashing/flash_model_windows.py checks the model box format against --firmware-type and refuses a mismatch"
   },
   "files": {
     "vela_model": "cat_emotion_v5_vela.tflite",
+    "vela_model_himax_official": "cat_emotion_v5_vela_himax_official.tflite",
     "tflite_model": "cat_emotion_v5_int8.tflite",
+    "tflite_model_himax_official": "cat_emotion_v5_int8_himax_official.tflite",
     "pytorch_weights": "best.pt",
     "vela_summary": "vela_summary.csv"
   }

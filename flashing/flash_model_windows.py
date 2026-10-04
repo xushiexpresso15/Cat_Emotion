@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-（Windows 版：從同學 GitHub edge-model-himax/flashing/flash_model.py 改的）
+r"""
+（Windows 版：從 flashing/flash_model.py 改的）
 改動：
   - 自動找 COM port 改用 pyserial 的 list_ports（原本只找 Linux 的 /dev/ttyACM*）
-  - 可以用 --model 指定要燒的 vela 模型檔
-  - 燒錄流程（DTR/RTS 重置 -> bootloader -> XMODEM 燒到 0x00B7B000）完全沒改
+  - 預設路徑以 repo 根目錄為準：model/v5/cat_emotion_v5_vela.tflite、firmware/output.img
+  - 燒錄前檢查模型的框座標格式跟目標韌體是否相符（--firmware-type），不符就拒絕燒錄
+  - Windows 節流：每包 XMODEM 分段送、等 ACK 最多 60 秒（板子每 1MB 會停幾秒寫 Flash）
+  - 燒錄流程（DTR/RTS 重置 -> bootloader -> XMODEM 燒到 0x00B7B000）沒改
 
-用法：
-    ../../train_env/Scripts/python.exe flash_model_windows.py --model cat_emotion_vela_v2.tflite
-    ../../train_env/Scripts/python.exe flash_model_windows.py --model cat_emotion_vela_v2.tflite --port COM5
+框座標格式（模型輸出 0 = [1,4,756]）：
+  project  韌體 firmware/output.img         -> 像素 0~192    -> model/v5/cat_emotion_v5_vela.tflite
+  official 韌體 Himax tflm_yolov8_od         -> 正規化 0~1    -> model/v5/cat_emotion_v5_vela_himax_official.tflite
+
+用法（在 repo 根目錄）：
+    python flashing/flash_model_windows.py --port COM4 --fast                      # 只燒 v5 模型（專案韌體）
+    python flashing/flash_model_windows.py --port COM4 --fast --with-firmware      # 專案韌體 + v5 模型
+    python flashing/flash_model_windows.py --port COM4 --fast --firmware-type official ^
+        --model model/v5/cat_emotion_v5_vela_himax_official.tflite
 
 Dedicated Safe Flasher for YOLOv8n Cat Emotion V8 (Perfect SOTA)
 ================================================================
@@ -31,9 +39,25 @@ import serial
 from xmodem import XMODEM
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent  # repo 根目錄
 FW_PATH = BASE_DIR / "firmware" / "output.img"
-MODEL_PATH = BASE_DIR / "model" / "cat_emotion_v8_refined_vela.tflite"
+MODEL_PATH = BASE_DIR / "model" / "v5" / "cat_emotion_v5_vela.tflite"
+EXPECTED_BOX_FORMAT = {"project": "pixel", "official": "normalized"}
+
+
+def model_box_format(path):
+    """讀模型輸出 [1,4,756]（框）的量化參數，判斷框是像素（0~192）還是正規化（0~1）。"""
+    import tflite  # pip install tflite
+
+    m = tflite.Model.GetRootAsModel(Path(path).read_bytes(), 0)
+    g = m.Subgraphs(0)
+    for i in range(g.OutputsLength()):
+        t = g.Tensors(g.Outputs(i))
+        if t.ShapeAsNumpy().tolist() == [1, 4, 756]:
+            q = t.Quantization()
+            top = (127 - q.ZeroPoint(0)) * q.Scale(0)  # int8 能表示的最大值
+            return "normalized" if top <= 2 else "pixel" if top >= 64 else f"unknown(max={top:.2f})"
+    return "unknown(no [1,4,756] output)"
 MODEL_ADDR = 0x00B7B000
 DEFAULT_BAUD = 921600
 
@@ -63,10 +87,20 @@ def detect_ports():
             esp_port = p.device
     return grove_port, esp_port
 
-def flash(port=None, baudrate=DEFAULT_BAUD, with_firmware=False):
+def flash(port=None, baudrate=DEFAULT_BAUD, with_firmware=False, firmware_type="project", force=False):
     global send_bin_total_packets
     if not MODEL_PATH.exists():
         print(f"❌ Error: Model file not found: {MODEL_PATH}")
+        return False
+    fmt = model_box_format(MODEL_PATH)
+    want = EXPECTED_BOX_FORMAT[firmware_type]
+    print(f" Box format check:   model={fmt}, {firmware_type} firmware expects {want}")
+    if fmt != want and not force:
+        print(f"❌ Error: {MODEL_PATH.name} outputs {fmt} boxes, but the {firmware_type} firmware expects {want} boxes.")
+        print("   Flashing it would make boxes wrong (about 192x too small or too large).")
+        print("   project  firmware -> model/v5/cat_emotion_v5_vela.tflite")
+        print("   official firmware -> model/v5/cat_emotion_v5_vela_himax_official.tflite (use --firmware-type official)")
+        print("   Use --force only if you know what you are doing.")
         return False
     if with_firmware and not FW_PATH.exists():
         print(f"❌ Error: Firmware file not found: {FW_PATH}")
@@ -297,8 +331,11 @@ if __name__ == "__main__":
     parser.add_argument("--port", default=None, help="Serial port (flag)")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD, help="Baudrate (default: 921600)")
     parser.add_argument("--with-firmware", action="store_true", help="Also reflash output.img (Default: False)")
-    parser.add_argument("--model", help="要燒錄的 *_vela.tflite")
-    parser.add_argument("--firmware", help="韌體 output.img 路徑（搭配 --with-firmware）")
+    parser.add_argument("--model", help=f"要燒錄的 *_vela.tflite（預設 {MODEL_PATH.relative_to(BASE_DIR)}）")
+    parser.add_argument("--firmware", help=f"韌體 output.img 路徑（搭配 --with-firmware，預設 {FW_PATH.relative_to(BASE_DIR)}）")
+    parser.add_argument("--firmware-type", choices=list(EXPECTED_BOX_FORMAT), default="project",
+                        help="板子上（或要一起燒）的韌體：project = firmware/output.img；official = Himax tflm_yolov8_od")
+    parser.add_argument("--force", action="store_true", help="略過框座標格式檢查")
     parser.add_argument("--fast", action="store_true", help="縮短節流停頓（64 bytes 一段、0.5ms），出錯就拿掉這個參數重燒")
     args = parser.parse_args()
     if args.fast:
@@ -309,4 +346,6 @@ if __name__ == "__main__":
         FW_PATH = Path(args.firmware).resolve()
 
     actual_port = args.port or args.pos_port or None
-    flash(port=actual_port, baudrate=args.baud, with_firmware=args.with_firmware)
+    ok = flash(port=actual_port, baudrate=args.baud, with_firmware=args.with_firmware,
+               firmware_type=args.firmware_type, force=args.force)
+    sys.exit(0 if ok else 1)
