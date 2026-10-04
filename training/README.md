@@ -62,7 +62,8 @@ python 2_train.py --data yolo_dataset/data.yaml --device 0
 ## 3. Export + INT8 + Vela
 
 ```bash
-python 3_export_and_compile.py --weights runs/cat_emotion_stage2/weights/best.pt --data-dir yolo_dataset --vela <path-to-vela_env>/Scripts/vela.exe
+python 3_export_and_compile.py --weights runs/cat_emotion_stage2/weights/best.pt --data-dir yolo_dataset --box-format pixel --vela <path-to-vela_env>/Scripts/vela.exe
+python 3_export_and_compile.py --weights runs/cat_emotion_stage2/weights/best.pt --data-dir yolo_dataset --box-format normalized --out-dir export_out_official --output cat_emotion_vela_himax_official.tflite --vela <path-to-vela_env>/Scripts/vela.exe
 ```
 
 The output is `cat_emotion_vela.tflite`, which is flashed to `0xB7B000`.
@@ -70,10 +71,13 @@ The output is `cat_emotion_vela.tflite`, which is flashed to `0xB7B000`.
 | | Shape | Content |
 |---|---|---|
 | Input | [1,192,192,3] int8 | RGB, scale 1/255, zero point −128 |
-| Output 0 | [1,4,756] int8 | Boxes cx, cy, w, h (normalized 0–1) |
+| Output 0 | [1,4,756] int8 | Boxes cx, cy, w, h (pixel 0–192 or normalized 0–1, see `--box-format`) |
 | Output 1 | [1,756,4] int8 | 4 emotion scores (0–1) |
 
-- Boxes are **normalized 0–1**, as expected by the **Himax official `tflm_yolov8_od`** firmware, which multiplies them by 192 itself.
+- `--box-format` must match the firmware that decodes the boxes:
+  - `pixel` (default): 0–192 pixel coordinates, for the project ESP32 firmware `firmware/output.img`.
+  - `normalized`: 0–1 coordinates, for the Himax official `tflm_yolov8_od` firmware, which multiplies by 192 itself.
+  - Both variants come from the same weights and give identical detections. Only the box units differ.
 - The boxes tensor is always placed **first**. The official firmware reads `output(0)` as boxes and crashes with a BusFault if the order is reversed.
 - The YOLOv8 head is rewritten in NHWC: DFL uses a matmul, and the box coordinates are concatenated on axis 1. As a result, the TFLite graph has **no Transpose op** and Vela 3.9.0 maps **100% of it to the NPU**.
 - INT8 calibration uses 300 training images: cats, background and faces.
@@ -83,10 +87,13 @@ The output is `cat_emotion_vela.tflite`, which is flashed to `0xB7B000`.
 ## 4. Board-like evaluation
 
 ```bash
-SCORE_TH=0.25 python 4_evaluate.py --model export_out/cat_emotion_int8.tflite --data-dir yolo_dataset --split test
+python 4_evaluate.py --model export_out/cat_emotion_int8.tflite --data-dir yolo_dataset --split test --score 0.50            # project firmware threshold
+python 4_evaluate.py --model export_out/cat_emotion_int8.tflite --data-dir yolo_dataset --split test --score 0.25 --camsim   # official firmware threshold + simulated camera
 ```
 
-- Uses the INT8 model with the same post-processing as the firmware: score threshold from `SCORE_TH`, class-agnostic NMS at IoU 0.45.
+- Uses the INT8 model with the same post-processing as the firmware: score threshold `--score` (0.50 for the project firmware, 0.25 for the official firmware) and class-agnostic NMS at IoU 0.45.
+- `--camsim` applies the fixed board-camera simulation (`camera_sim.camsim_eval_image`, seeded by image index).
+- For the simulated-camera mAP, generate the same images as a dataset with `python make_camsim_dataset.py --src yolo_dataset --dst yolo_dataset_camsim`, then run `yolo val ... data=yolo_dataset_camsim/data.yaml split=test`.
 - Reports background and face false positives, the cat detection rate, emotion accuracy and a confusion matrix.
 
 ## Results (model v5, held-out test set)
@@ -97,14 +104,22 @@ SCORE_TH=0.25 python 4_evaluate.py --model export_out/cat_emotion_int8.tflite --
 | **Test** | **89.8%** | **71.0%** | **84.1%** | 0/40 | 0/15 |
 | Test, simulated board camera | 89.9% | 72.6% | 86.6% | 1/40 | 0/15 |
 
+With the project firmware's threshold (score ≥ 0.50): emotion accuracy 81.7% on test and 81.7% on simulated camera, with 0/40 background and 0/15 face false positives.
+
 Per-class test mAP50: angry 96.9%, focus 82.7%, relax 89.3%, scared 90.3%.
 The test set has about 40 images per class, so expect roughly ±4% noise.
 
 ## Flashing (Windows)
 
 ```bash
-python ../flashing/flash_model_windows.py --port COM4 --fast --model cat_emotion_vela.tflite
+python ../flashing/flash_model_windows.py --port COM4 --fast --model cat_emotion_vela.tflite                                       # project firmware (pixel boxes)
+python ../flashing/flash_model_windows.py --port COM4 --fast --firmware-type official --model cat_emotion_vela_himax_official.tflite  # official firmware
 ```
 
 - The Windows CH343 driver sends data too fast for the bootloader. The flasher therefore throttles each XMODEM packet and waits up to 60 seconds for an ACK, because the board pauses for several seconds every 1 MB to write flash.
 - `--fast` takes about 2m20s for a 2.8 MB model. Leave out `--fast` for the slower, most conservative timing.
+- The flasher checks the model's box format against `--firmware-type` (default `project`) and refuses a mismatch.
+
+## Checks
+
+`python tools/check_artifacts.py` (run from the repo root, also in CI) checks the artifact paths, the tensor shapes, order and quantization, the flasher guard, and the evaluation command.

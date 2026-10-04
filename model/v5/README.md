@@ -28,15 +28,29 @@ Per-class test mAP50 / mAP50-95:
 |---|---|---|---|
 | 96.9% / 79.5% | 82.7% / 65.7% | 89.3% / 68.9% | 90.3% / 69.9% |
 
-### Board-like evaluation (INT8 model, score threshold 0.25, NMS IoU 0.45)
+### Board-like evaluation (INT8 model, NMS IoU 0.45)
 
-| | Test | Test, simulated board camera |
-|---|---|---|
-| Background false positives | 0 / 40 (0%) | 1 / 40 (2.5%) |
-| Human-face false positives | 0 / 15 (0%) | 0 / 15 (0%) |
-| Cat detection rate | 162 / 164 (98.8%) | 161 / 164 (98.2%) |
-| **Emotion accuracy** | **138 / 164 (84.1%)** | **142 / 164 (86.6%)** |
-| angry / focus / relax / scared | 92.5 / 93.2 / 73.2 / 76.9% | 97.5 / 90.9 / 73.2 / 84.6% |
+The score threshold follows the firmware: **0.50** for the project ESP32 firmware (`firmware/output.img`), and **0.25** for the Himax official `tflm_yolov8_od` firmware. The pixel and normalized variants give identical results, because only the box units differ.
+
+| Test set (164 cats, 40 background, 15 faces) | Project firmware (score ≥ 0.50) | Project firmware, simulated camera | Official firmware (score ≥ 0.25) | Official firmware, simulated camera |
+|---|---|---|---|---|
+| Background false positives | 0 / 40 | 0 / 40 | 0 / 40 | 1 / 40 |
+| Human-face false positives | 0 / 15 | 0 / 15 | 0 / 15 | 0 / 15 |
+| Cat detection rate | 155 / 164 (94.5%) | 152 / 164 (92.7%) | 162 / 164 (98.8%) | 161 / 164 (98.2%) |
+| **Emotion accuracy** | **134 / 164 (81.7%)** | **134 / 164 (81.7%)** | **138 / 164 (84.1%)** | **142 / 164 (86.6%)** |
+
+Reproduce, from `training/`, after running `1_auto_label.py`:
+
+```bash
+python 4_evaluate.py --model ../model/v5/cat_emotion_v5_int8.tflite --data-dir yolo_dataset --split test --score 0.50            # project firmware
+python 4_evaluate.py --model ../model/v5/cat_emotion_v5_int8.tflite --data-dir yolo_dataset --split test --score 0.50 --camsim   # + simulated camera
+python 4_evaluate.py --model ../model/v5/cat_emotion_v5_int8_himax_official.tflite --data-dir yolo_dataset --split test --score 0.25 [--camsim]
+# simulated-camera mAP
+python make_camsim_dataset.py --src yolo_dataset --dst yolo_dataset_camsim
+yolo val model=../model/v5/best.pt data=yolo_dataset_camsim/data.yaml split=test imgsz=192 iou=0.45 workers=0
+```
+
+`--camsim` applies `camera_sim.camsim_eval_image()` with seed = the image's sorted index. The images are pixel-identical to the ones written by `make_camsim_dataset.py`.
 
 > **Notes**
 > - The test set has about 40 images per class, so the numbers carry roughly ±4% noise.
@@ -51,7 +65,7 @@ Per-class test mAP50 / mAP50-95:
 |---|---|
 | Architecture | YOLOv8n (SiLU), 3.0M parameters |
 | Input | `[1, 192, 192, 3]` int8, RGB, scale 1/255, zero point −128 |
-| Output 0 | `[1, 4, 756]` int8: boxes cx, cy, w, h, **normalized 0–1** |
+| Output 0 | `[1, 4, 756]` int8: boxes cx, cy, w, h — **pixel 0–192** (`cat_emotion_v5_vela.tflite`) or **normalized 0–1** (`*_himax_official.tflite`) |
 | Output 1 | `[1, 756, 4]` int8: emotion scores (0–1) |
 | Quantization | Full INT8, calibrated on 300 training images |
 | NPU compiler | Vela **3.9.0**, `ethos-u55-64`, `himax_vela.ini` (My_Sys_Cfg / My_Mem_Mode_Parent) |
@@ -60,14 +74,29 @@ Per-class test mAP50 / mAP50-95:
 | Measured frame time | About 99 ms on the board, including image capture |
 | Flash address | `0xB7B000` |
 
-### Firmware compatibility
+### Firmware compatibility (both verified on the board)
 
-- ✅ **Himax official `tflm_yolov8_od`** ([Seeed_Grove_Vision_AI_Module_V2](https://github.com/HimaxWiseEyePlus/Seeed_Grove_Vision_AI_Module_V2), `APP_TYPE = tflm_yolov8_od`): tested on the board, and both boxes and emotions work.
-  - This firmware reads **`output(0)` as boxes** without checking the order. If the order were reversed, the board would crash with a BusFault. This model already puts the boxes first.
-  - Detection results and camera frames are both sent over USB, so you can watch them on a PC with `tools/board_view_cv.py`.
-- ⚠️ **Project ESP32 firmware** (`firmware/output.img` on this branch): **not yet tested on the board**.
-  - Its source code treats boxes as pixel coordinates (0–192), while this model outputs normalized 0–1 boxes.
-  - Boxes may therefore look too small on that firmware. If so, the export needs to output pixel coordinates (multiply the boxes by 192) and the model must be re-exported.
+The two firmwares decode boxes differently, so v5 ships **two variants of the same weights**. They differ only in box units, and the flasher refuses a mismatched combination.
+
+| Firmware | Model | Boxes | Score threshold | Hardware check |
+|---|---|---|---|---|
+| **Project ESP32 firmware** `firmware/output.img` (default) | `cat_emotion_v5_vela.tflite` | pixel 0–192 | 0.50 | ✅ 96 frames in 12 s, box on every frame, box size about 239×201 px in the 320×240 frame (not 192× too small) |
+| **Himax official `tflm_yolov8_od`** `firmware/himax_official_tflm_yolov8_od/output.img` | `cat_emotion_v5_vela_himax_official.tflite` | normalized 0–1 | 0.25 | ✅ 39 frames in 10 s with JPEG, box correctly on the cat (relax 97%) |
+
+- The project firmware's USB port sends detection results only; camera frames go to the ESP32 over UART1.
+- The official firmware sends results **and** camera frames over USB, so you can watch them on a PC with `tools/board_view_cv.py`.
+- The official firmware reads `output(0)` as boxes without checking the order, and would crash with a BusFault if the order were reversed. Both variants put the boxes first.
+- `firmware/himax_official_tflm_yolov8_od/output.img` was built from [Seeed_Grove_Vision_AI_Module_V2](https://github.com/HimaxWiseEyePlus/Seeed_Grove_Vision_AI_Module_V2) at commit `d3265e2`. The only change was `APP_TYPE = tflm_yolov8_od`, built with Arm GNU Toolchain 13.2.
+
+### Flashing (Windows)
+
+```bash
+python flashing/flash_model_windows.py --port COM4 --fast                    # v5 model only, project firmware (defaults)
+python flashing/flash_model_windows.py --port COM4 --fast --with-firmware    # project firmware + v5 model
+python flashing/flash_model_windows.py --port COM4 --fast --with-firmware --firmware-type official --firmware firmware/himax_official_tflm_yolov8_od/output.img --model model/v5/cat_emotion_v5_vela_himax_official.tflite
+```
+
+Before flashing, the flasher reads the model's box quantization and compares it with `--firmware-type`. A mismatch is refused, and `--force` overrides this check.
 
 ---
 
@@ -75,8 +104,9 @@ Per-class test mAP50 / mAP50-95:
 
 | File | Description |
 |---|---|
-| `cat_emotion_v5_vela.tflite` | Vela-compiled model, ready to flash to `0xB7B000` |
-| `cat_emotion_v5_int8.tflite` | INT8 TFLite model before Vela compilation |
+| `cat_emotion_v5_vela.tflite` | Vela-compiled model for the **project firmware** (pixel boxes). Flash to `0xB7B000` |
+| `cat_emotion_v5_vela_himax_official.tflite` | Vela-compiled model for the **Himax official** firmware (normalized boxes) |
+| `cat_emotion_v5_int8.tflite` / `cat_emotion_v5_int8_himax_official.tflite` | INT8 TFLite models before Vela compilation, used for evaluation |
 | `best.pt` | PyTorch weights |
 | `vela_summary.csv` | Vela compiler report |
 | `MANIFEST.json` | Model metadata |
