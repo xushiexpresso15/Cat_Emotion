@@ -110,3 +110,11 @@ def degrade_fixed(img, boxes_xywhn, seed):
     img = np.clip(x, 0, 255).astype(np.uint8)
     img = cv2.imdecode(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 55])[1], cv2.IMREAD_COLOR)
     return img, out
+
+
+def camsim_eval_image(img, seed):
+    """評估用的板子畫質：degrade_fixed() 之後再存一次 JPEG（OpenCV 預設品質 95）。
+    跟 make_camsim_dataset.py 存到硬碟、再讀回來的圖逐像素相同，所以 4_evaluate.py --camsim
+    和用資料集跑 mAP 看到的是同一批影像。seed = 該圖在 split 內的排序位置。"""
+    out, _ = degrade_fixed(img, [], seed)
+    return cv2.imdecode(cv2.imencode(".jpg", out)[1], cv2.IMREAD_COLOR)
