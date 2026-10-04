@@ -7,6 +7,7 @@
 #include "jpeg_decoder.h"
 #include <esp_heap_caps.h>
 #include <ctype.h>
+#include <math.h>
 
 // ============================================================================
 // Compact 5x7 ASCII Bitmap Font for On-Device Image Annotation
@@ -109,6 +110,16 @@ static const uint8_t* getFontGlyph(char c) {
         return FONT_5X7_GLYPHS[c - 32];
     }
     return FONT_5X7_BLANK;
+}
+
+static uint8_t linToSrgb8(float y) {
+    float v = (y <= 0.0031308f)
+                  ? (12.92f * y)
+                  : (1.055f * powf(fmaxf(y, 0.0f), 1.0f / 2.4f) - 0.055f);
+    int o = (int)lroundf(v * 255.0f);
+    if (o < 0) o = 0;
+    if (o > 255) o = 255;
+    return (uint8_t)o;
 }
 
 static inline void setPixelRGB(uint8_t* rgb, int w, int h, int x, int y, uint8_t r, uint8_t g, uint8_t b) {
@@ -217,6 +228,30 @@ static uint8_t* drawBoundingBoxOnJpeg(
 
     int img_w = dec_out.width;
     int img_h = dec_out.height;
+
+    /* Same linear-light WB as the live dashboard (JPEG is HW-encoded green). */
+    {
+        static uint8_t lut_r[256], lut_g[256], lut_b[256], lut_ready = 0;
+        if (!lut_ready) {
+            for (int i = 0; i < 256; i++) {
+                float x = (float)i / 255.0f;
+                float lin = (x <= 0.04045f) ? (x / 12.92f)
+                                            : powf((x + 0.055f) / 1.055f, 2.4f);
+                lut_r[i] = linToSrgb8(lin * 1.954f);
+                lut_g[i] = linToSrgb8(lin * 1.000f);
+                lut_b[i] = linToSrgb8(lin * 1.643f);
+            }
+            lut_ready = 1;
+        }
+        uint8_t* p = rgb_buf;
+        int n = img_w * img_h;
+        for (int i = 0; i < n; i++) {
+            p[0] = lut_r[p[0]];
+            p[1] = lut_g[p[1]];
+            p[2] = lut_b[p[2]];
+            p += 3;
+        }
+    }
 
     int bx = bbox.x;
     int by = bbox.y;
