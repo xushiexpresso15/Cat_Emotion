@@ -93,10 +93,17 @@ The two firmwares decode boxes differently, so v5 ships **two variants of the sa
 ```bash
 python flashing/flash_model_windows.py --port COM4 --fast                    # v5 model only, project firmware (defaults)
 python flashing/flash_model_windows.py --port COM4 --fast --with-firmware    # project firmware + v5 model
-python flashing/flash_model_windows.py --port COM4 --fast --with-firmware --firmware-type official --firmware firmware/himax_official_tflm_yolov8_od/output.img --model model/v5/cat_emotion_v5_vela_himax_official.tflite
+python flashing/flash_model_windows.py --port COM4 --fast --with-firmware --firmware-type official --model model/v5/cat_emotion_v5_vela_himax_official.tflite
+python flashing/flash_model_windows.py --dry-run --with-firmware --firmware-type official --model model/v5/cat_emotion_v5_vela_himax_official.tflite   # checks only, no board needed
 ```
 
-Before flashing, the flasher reads the model's box quantization and compares it with `--firmware-type`. A mismatch is refused, and `--force` overrides this check.
+`--firmware-type` is authoritative for both files:
+
+- **Model:** the flasher reads the model's box quantization and checks that it matches the firmware type (pixel for `project`, normalized for `official`).
+- **Firmware (`--with-firmware`):** the image is picked automatically from `--firmware-type`. An explicit `--firmware` is identified by SHA-256 and must be that same type; an unknown image is refused.
+- **Mismatches** are refused before the serial port is opened. `--force` overrides the checks.
+- **`--dry-run`** runs every check and prints what would be flashed without connecting to the board.
+- **Limitation:** for a model-only flash (no `--with-firmware`), the flasher cannot see which firmware is currently on the board, so it trusts `--firmware-type`.
 
 ---
 

@@ -118,7 +118,7 @@ python ../flashing/flash_model_windows.py --port COM4 --fast --firmware-type off
 
 - The Windows CH343 driver sends data too fast for the bootloader. The flasher therefore throttles each XMODEM packet and waits up to 60 seconds for an ACK, because the board pauses for several seconds every 1 MB to write flash.
 - `--fast` takes about 2m20s for a 2.8 MB model. Leave out `--fast` for the slower, most conservative timing.
-- The flasher checks the model's box format against `--firmware-type` (default `project`) and refuses a mismatch.
+- `--firmware-type` (default `project`) is authoritative: the model's box format must match it, and with `--with-firmware` the firmware image is chosen from it automatically. An explicit `--firmware` must have the matching SHA-256. Mismatches are refused, and `--dry-run` checks everything without touching the board.
 
 ## Checks
 

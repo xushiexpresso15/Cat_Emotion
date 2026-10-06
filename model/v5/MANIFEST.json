@@ -123,15 +123,17 @@
       "firmware": "firmware/output.img",
       "model": "cat_emotion_v5_vela.tflite",
       "box_format": "pixel 0-192",
-      "score_threshold": 0.5
+      "score_threshold": 0.5,
+      "sha256": "771b3b65b5988fe3751f4d6d082ae2bc33f7d1e7d2b6a9819e2b8e8f68f76874"
     },
     "himax_official_tflm_yolov8_od": {
       "firmware": "firmware/himax_official_tflm_yolov8_od/output.img",
       "model": "cat_emotion_v5_vela_himax_official.tflite",
       "box_format": "normalized 0-1",
-      "score_threshold": 0.25
+      "score_threshold": 0.25,
+      "sha256": "8c039ee8959e8b0b10ddd747e858b26542cd3dad2bdb486a60109c4cfce19320"
     },
-    "guard": "flashing/flash_model_windows.py checks the model box format against --firmware-type and refuses a mismatch"
+    "guard": "flashing/flash_model_windows.py: --firmware-type is authoritative; the model box format must match it, --with-firmware picks the matching firmware image automatically, an explicit --firmware is verified by SHA-256, mismatches and unknown images are refused; --dry-run checks without flashing"
   },
   "files": {
     "vela_model": "cat_emotion_v5_vela.tflite",
