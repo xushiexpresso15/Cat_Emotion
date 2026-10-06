@@ -11,6 +11,9 @@ Lightweight static checks for the v5 model release (run by CI and locally from t
    - box format matches the file name: *_himax_official* -> normalized 0-1, otherwise pixel 0-192
    - Vela files contain a single ethos-u custom op (100% NPU, no CPU fallback)
 3. Flasher guard: the default model matches the project firmware, and a mismatched model is refused.
+   --with-firmware regression (--dry-run, no serial port): the firmware image is picked from
+   --firmware-type, and every firmware/model mismatch is refused, including an explicit --firmware
+   that does not match --firmware-type and an unknown image.
 4. Evaluation command: runs training/4_evaluate.py (with and without --camsim) on a tiny synthetic
    dataset to make sure the documented command executes end to end.
 
@@ -91,7 +94,9 @@ def main():
     flasher = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(flasher)
     check(flasher.MODEL_PATH.is_file(), f"flasher default model resolves: {flasher.MODEL_PATH.relative_to(ROOT)}")
-    check(flasher.FW_PATH.is_file(), f"flasher default firmware resolves: {flasher.FW_PATH.relative_to(ROOT)}")
+    for ftype, fw in flasher.FIRMWARE_PATHS.items():
+        check(fw.is_file(), f"flasher {ftype} firmware resolves: {fw.relative_to(ROOT)}")
+        check(flasher.firmware_type_of(fw) == ftype, f"flasher recognises {fw.relative_to(ROOT)} as {ftype} (SHA-256)")
 
     print("[2] Tensor contract")
     for name, (fmt, is_vela) in MODELS.items():
@@ -103,6 +108,29 @@ def main():
     flasher.MODEL_PATH = V5 / "cat_emotion_v5_vela_himax_official.tflite"
     check(flasher.flash(port="NONE", firmware_type="project") is False,
           "normalized model is refused for the project firmware (before touching the serial port)")
+
+    print("[3b] Flasher --with-firmware regression (--dry-run)")
+    om = "model/v5/cat_emotion_v5_vela_himax_official.tflite"
+    pf, of = "firmware/output.img", "firmware/himax_official_tflm_yolov8_od/output.img"
+    cases = [
+        # (description, args, expected exit code, text that must appear in the output)
+        ("project defaults -> project firmware + pixel model", ["--with-firmware"], 0, "firmware" + "/output.img -> 0x"),
+        ("official type, no --firmware -> official image picked automatically",
+         ["--with-firmware", "--firmware-type", "official", "--model", om], 0, "himax_official_tflm_yolov8_od"),
+        ("official type + project firmware image is refused",
+         ["--with-firmware", "--firmware-type", "official", "--model", om, "--firmware", pf], 1, "is the project firmware"),
+        ("project type + official firmware image is refused",
+         ["--with-firmware", "--firmware-type", "project", "--firmware", of], 1, "is the official firmware"),
+        ("official model + project firmware (defaults) is refused", ["--with-firmware", "--model", om], 1, "expects pixel"),
+        ("unknown firmware image is refused", ["--with-firmware", "--firmware", "README.md"], 1, "not a known firmware image"),
+    ]
+    for desc, extra, want_code, want_text in cases:
+        r = subprocess.run([sys.executable, "flashing/flash_model_windows.py", "--dry-run", *extra],
+                           capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
+        out = (r.stdout + r.stderr).replace("\\", "/")
+        check(r.returncode == want_code and want_text in out, f"{desc} (exit {r.returncode})")
+        if not (r.returncode == want_code and want_text in out):
+            print(out[-1500:])
 
     print("[4] Evaluation command (synthetic smoke test)")
     with tempfile.TemporaryDirectory() as tmp:

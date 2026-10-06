@@ -6,6 +6,9 @@ r"""
   - 自動找 COM port 改用 pyserial 的 list_ports（原本只找 Linux 的 /dev/ttyACM*）
   - 預設路徑以 repo 根目錄為準：model/v5/cat_emotion_v5_vela.tflite、firmware/output.img
   - 燒錄前檢查模型的框座標格式跟目標韌體是否相符（--firmware-type），不符就拒絕燒錄
+  - --with-firmware 時，韌體檔依 --firmware-type 自動選擇，並用 SHA-256 確認實際要燒的韌體檔就是
+    該類型（--firmware 指定的檔案也一樣檢查）；不符或不認得就拒絕燒錄
+  - --dry-run：只做所有檢查、印出會燒哪些檔案，不連接板子
   - Windows 節流：每包 XMODEM 分段送、等 ACK 最多 60 秒（板子每 1MB 會停幾秒寫 Flash）
   - 燒錄流程（DTR/RTS 重置 -> bootloader -> XMODEM 燒到 0x00B7B000）沒改
 
@@ -16,8 +19,12 @@ r"""
 用法（在 repo 根目錄）：
     python flashing/flash_model_windows.py --port COM4 --fast                      # 只燒 v5 模型（專案韌體）
     python flashing/flash_model_windows.py --port COM4 --fast --with-firmware      # 專案韌體 + v5 模型
-    python flashing/flash_model_windows.py --port COM4 --fast --firmware-type official ^
-        --model model/v5/cat_emotion_v5_vela_himax_official.tflite
+    python flashing/flash_model_windows.py --port COM4 --fast --with-firmware --firmware-type official ^
+        --model model/v5/cat_emotion_v5_vela_himax_official.tflite              # 官方韌體 + v5（韌體檔自動選）
+    python flashing/flash_model_windows.py --dry-run --with-firmware --firmware-type official ^
+        --model model/v5/cat_emotion_v5_vela_himax_official.tflite              # 只檢查、不燒錄
+
+限制：只燒模型（不加 --with-firmware）時，程式無法得知板子上現在是哪個韌體，只能依 --firmware-type 判斷。
 
 Dedicated Safe Flasher for YOLOv8n Cat Emotion V8 (Perfect SOTA)
 ================================================================
@@ -40,9 +47,26 @@ from xmodem import XMODEM
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # repo 根目錄
-FW_PATH = BASE_DIR / "firmware" / "output.img"
 MODEL_PATH = BASE_DIR / "model" / "v5" / "cat_emotion_v5_vela.tflite"
 EXPECTED_BOX_FORMAT = {"project": "pixel", "official": "normalized"}
+# 每種韌體類型對應的韌體檔（--with-firmware 時依 --firmware-type 自動選擇）
+FIRMWARE_PATHS = {
+    "project": BASE_DIR / "firmware" / "output.img",
+    "official": BASE_DIR / "firmware" / "himax_official_tflm_yolov8_od" / "output.img",
+}
+# 已知韌體檔的 SHA-256 -> 韌體類型，用來確認「實際要燒的檔案」是哪一種
+KNOWN_FIRMWARE_SHA256 = {
+    "771b3b65b5988fe3751f4d6d082ae2bc33f7d1e7d2b6a9819e2b8e8f68f76874": "project",
+    "8c039ee8959e8b0b10ddd747e858b26542cd3dad2bdb486a60109c4cfce19320": "official",
+}
+FW_PATH = None  # --firmware 指定時才會設定；否則依 --firmware-type 從 FIRMWARE_PATHS 選
+
+
+def firmware_type_of(path):
+    """用 SHA-256 判斷韌體檔是哪一種；不認得就回傳 None。"""
+    import hashlib
+
+    return KNOWN_FIRMWARE_SHA256.get(hashlib.sha256(Path(path).read_bytes()).hexdigest())
 
 
 def model_box_format(path):
@@ -87,8 +111,8 @@ def detect_ports():
             esp_port = p.device
     return grove_port, esp_port
 
-def flash(port=None, baudrate=DEFAULT_BAUD, with_firmware=False, firmware_type="project", force=False):
-    global send_bin_total_packets
+def flash(port=None, baudrate=DEFAULT_BAUD, with_firmware=False, firmware_type="project", force=False, dry_run=False):
+    global send_bin_total_packets, FW_PATH
     if not MODEL_PATH.exists():
         print(f"❌ Error: Model file not found: {MODEL_PATH}")
         return False
@@ -102,9 +126,27 @@ def flash(port=None, baudrate=DEFAULT_BAUD, with_firmware=False, firmware_type="
         print("   official firmware -> model/v5/cat_emotion_v5_vela_himax_official.tflite (use --firmware-type official)")
         print("   Use --force only if you know what you are doing.")
         return False
-    if with_firmware and not FW_PATH.exists():
-        print(f"❌ Error: Firmware file not found: {FW_PATH}")
-        return False
+    if with_firmware:
+        fw = Path(FW_PATH) if FW_PATH else FIRMWARE_PATHS[firmware_type]
+        if not fw.exists():
+            print(f"❌ Error: Firmware file not found: {fw}")
+            return False
+        fw_type = firmware_type_of(fw)
+        print(f" Firmware check:     {fw} -> {fw_type or 'unknown image'}, --firmware-type {firmware_type}")
+        if fw_type != firmware_type and not force:
+            if fw_type is None:
+                print(f"❌ Error: {fw} is not a known firmware image, so its box format cannot be verified.")
+            else:
+                print(f"❌ Error: {fw} is the {fw_type} firmware, but --firmware-type is {firmware_type}.")
+            print(f"   {firmware_type} firmware -> {FIRMWARE_PATHS[firmware_type].relative_to(BASE_DIR)}")
+            print("   Omit --firmware to pick the matching image automatically, or use --force if you know what you are doing.")
+            return False
+        FW_PATH = fw
+    if dry_run:
+        print(" Dry run:            all checks passed; would flash "
+              + (f"{FW_PATH.relative_to(BASE_DIR) if FW_PATH.is_relative_to(BASE_DIR) else FW_PATH} -> 0x00000000 and " if with_firmware else "")
+              + f"{MODEL_PATH.name} -> 0x{MODEL_ADDR:06X}")
+        return True
 
     detected_grove, detected_esp = detect_ports()
 
@@ -332,10 +374,12 @@ if __name__ == "__main__":
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD, help="Baudrate (default: 921600)")
     parser.add_argument("--with-firmware", action="store_true", help="Also reflash output.img (Default: False)")
     parser.add_argument("--model", help=f"要燒錄的 *_vela.tflite（預設 {MODEL_PATH.relative_to(BASE_DIR)}）")
-    parser.add_argument("--firmware", help=f"韌體 output.img 路徑（搭配 --with-firmware，預設 {FW_PATH.relative_to(BASE_DIR)}）")
+    parser.add_argument("--firmware", help="韌體 output.img 路徑（搭配 --with-firmware；不指定時依 --firmware-type 自動選，"
+                                           "指定時會用 SHA-256 確認跟 --firmware-type 相符）")
     parser.add_argument("--firmware-type", choices=list(EXPECTED_BOX_FORMAT), default="project",
                         help="板子上（或要一起燒）的韌體：project = firmware/output.img；official = Himax tflm_yolov8_od")
-    parser.add_argument("--force", action="store_true", help="略過框座標格式檢查")
+    parser.add_argument("--force", action="store_true", help="略過框座標格式和韌體檔類型檢查")
+    parser.add_argument("--dry-run", action="store_true", help="只做檢查、印出會燒哪些檔案，不連接板子")
     parser.add_argument("--fast", action="store_true", help="縮短節流停頓（64 bytes 一段、0.5ms），出錯就拿掉這個參數重燒")
     args = parser.parse_args()
     if args.fast:
@@ -347,5 +391,5 @@ if __name__ == "__main__":
 
     actual_port = args.port or args.pos_port or None
     ok = flash(port=actual_port, baudrate=args.baud, with_firmware=args.with_firmware,
-               firmware_type=args.firmware_type, force=args.force)
+               firmware_type=args.firmware_type, force=args.force, dry_run=args.dry_run)
     sys.exit(0 if ok else 1)
