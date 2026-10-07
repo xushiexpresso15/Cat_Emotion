@@ -39,6 +39,16 @@
 
 #define CHANGE_YOLOV8_OB_OUPUT_SHAPE 1
 
+/*
+ * imx519_af.c lowers this while an AF search is running, so a build that
+ * streams a JPEG preview can send one every Nth frame and let the search
+ * step closer to the capture rate. This build sends no preview, so nothing
+ * reads it - it exists because the AF code declares it extern.
+ */
+extern "C" {
+volatile uint8_t g_preview_divider = 1;
+}
+
 
 #define INPUT_IMAGE_CHANNELS 3
 
@@ -50,6 +60,39 @@
 #define YOLOV8_OB_INPUT_TENSOR_WIDTH   224
 #define YOLOV8_OB_INPUT_TENSOR_HEIGHT  224
 #define YOLOV8_OB_INPUT_TENSOR_CHANNEL INPUT_IMAGE_CHANNELS
+#endif
+
+/*
+ * Letterbox the capture into the square model input, as the model was trained
+ * (Ultralytics LetterBox): one scale factor for both axes, the unused rows
+ * filled with the pad value (114 = Ultralytics' default grey). 0 stretches the
+ * 320x240 capture to 192x192 instead, as the SDK example did.
+ */
+#define YOLOV8_OB_LETTERBOX            1
+#define YOLOV8_OB_LETTERBOX_PAD        114
+
+#if YOLOV8_OB_LETTERBOX
+typedef struct {
+	float scale;	// capture pixels -> tensor pixels
+	int new_h;		// rows the image occupies in the tensor
+	int pad_y;		// pad rows above it
+} yolov8_ob_letterbox_t;
+
+/*
+ * Landscape captures only: the image spans the full tensor width and is padded
+ * top and bottom. The resize writes whole tensor rows, so this is what lets it
+ * write straight into the tensor.
+ */
+static yolov8_ob_letterbox_t yolov8_ob_letterbox(uint32_t img_w, uint32_t img_h)
+{
+	yolov8_ob_letterbox_t lb;
+	lb.scale = (float)YOLOV8_OB_INPUT_TENSOR_WIDTH / (float)img_w;
+	lb.new_h = (int)((float)img_h * lb.scale + 0.5f);
+	if (lb.new_h > YOLOV8_OB_INPUT_TENSOR_HEIGHT)
+		lb.new_h = YOLOV8_OB_INPUT_TENSOR_HEIGHT;
+	lb.pad_y = (YOLOV8_OB_INPUT_TENSOR_HEIGHT - lb.new_h) / 2;
+	return lb;
+}
 #endif
 
 #define YOLOV8N_OB_DBG_APP_LOG 0
@@ -198,7 +241,9 @@ int cv_yolov8n_ob_init(bool security_enable, bool privilege_enable, uint32_t mod
 		yolov8n_ob_input = yolov8n_ob_static_interpreter.input(0);
 		yolov8n_ob_output = yolov8n_ob_static_interpreter.output(0);
 		#if CHANGE_YOLOV8_OB_OUPUT_SHAPE
-			yolov8n_ob_output2 = yolov8n_ob_static_interpreter.output(1);
+			// A model with one combined output has no output(1).
+			if (yolov8n_ob_static_interpreter.outputs_size() > 1)
+				yolov8n_ob_output2 = yolov8n_ob_static_interpreter.output(1);
 		#endif
 	}
 
@@ -266,21 +311,30 @@ static void yolov8_ob_post_processing(tflite::MicroInterpreter* static_interpret
 	uint32_t img_w = app_get_raw_width();
     uint32_t img_h = app_get_raw_height();
 
-	// The Vela-compiled model exposes 2 combined output tensors:
-	//   output(0): [1, 4,   756] - bbox distances (left,top,right,bottom) for all strides
-	//   output(1): [1, 756, num_classes] - class scores for all strides
-	// The swap below ensures output always = bbox tensor (dims[1]==4)
+	// Two output layouts are supported:
+	//   two tensors (cat_emotion_v8 models):
+	//     [1, 4,   756] - box (cx, cy, w, h) for all strides
+	//     [1, 756, num_classes] - class scores, in either output order
+	//   one tensor (best_full_integer_quant, 2026-10):
+	//     [1, 4 + num_classes, 756] - channels first: box in channels 0-3,
+	//     class c in channel 4 + c; boxes and scores share one quantization
+	// In both, element [coord, anchor] of the box is at coord * 756 + anchor.
 	TfLiteTensor* output   = static_interpreter->output(0);
-	TfLiteTensor* output_2 = static_interpreter->output(1);
+	TfLiteTensor* output_2 = output;
+	bool combined = (static_interpreter->outputs_size() == 1);
 
-	// Ensure output = boxes tensor (dimension 1 should be 4 for [1,4,756])
-	if (output->dims->data[1] != 4 && output_2->dims->data[1] == 4) {
-		TfLiteTensor* temp = output;
-		output   = output_2;
-		output_2 = temp;
+	if (!combined) {
+		output_2 = static_interpreter->output(1);
+		// Ensure output = boxes tensor (dimension 1 should be 4 for [1,4,756])
+		if (output->dims->data[1] != 4 && output_2->dims->data[1] == 4) {
+			TfLiteTensor* temp = output;
+			output   = output_2;
+			output_2 = temp;
+		}
 	}
 
-	int num_classes = output_2->dims->data[2]; // e.g. 4 (angry/focus/relax/scared)
+	int num_classes = combined ? output->dims->data[1] - 4      // 8 - 4
+	                           : output_2->dims->data[2];       // e.g. 4 (angry/focus/relax/scared)
 
 	#if YOLOV8N_OB_DBG_APP_LOG
 		xprintf("bbox  tensor shape: [%d,%d,%d]\r\n",
@@ -308,7 +362,8 @@ static void yolov8_ob_post_processing(tflite::MicroInterpreter* static_interpret
 		float  maxScore      = -1.0f;
 		uint16_t maxClassIdx = 0;
 		for (int c = 0; c < num_classes; c++) {
-			int   raw   = (int)output_2->data.int8[a * num_classes + c];
+			int   raw   = combined ? (int)output->data.int8[(4 + c) * N_anchors + a]
+			                       : (int)output_2->data.int8[a * num_classes + c];
 			float score = ((float)raw - (float)output_2_zeropoint) * output_2_scale;
 			if (score > maxScore) { maxScore = score; maxClassIdx = (uint16_t)c; }
 		}
@@ -319,7 +374,17 @@ static void yolov8_ob_post_processing(tflite::MicroInterpreter* static_interpret
 		float dist[4];
 		for (int k = 0; k < 4; k++) {
 			int raw  = (int)output->data.int8[k * N_anchors + a];
-			dist[k]  = ((float)raw - (float)output_zeropoint) * output_scale;
+			/*
+			 * This head is quantized with scale 1/255 and zero point -128, so
+			 * the dequantized value spans 0.0 to 1.0: the coordinates are
+			 * NORMALISED, not the "absolute pixel coordinates (0~192)" the
+			 * comment below assumes. Measured on hardware 2026-09-22: without
+			 * this multiply every box collapses to [0,0,1,0] once
+			 * scale_factor_* and the cast to integer are applied. The model
+			 * takes a square input, so one factor serves both axes.
+			 */
+			dist[k]  = ((float)raw - (float)output_zeropoint) * output_scale
+			           * (float)YOLOV8_OB_INPUT_TENSOR_WIDTH;
 		}
 
 		box bbox;
@@ -345,8 +410,28 @@ static void yolov8_ob_post_processing(tflite::MicroInterpreter* static_interpret
 		xprintf("nms_result.size(): %d\r\n", (int)nms_result.size());
 	#endif
 
+#if YOLOV8_OB_LETTERBOX
+	yolov8_ob_letterbox_t lb = yolov8_ob_letterbox(img_w, img_h);
+	float scale_factor_w = 1.0f / lb.scale;
+	float scale_factor_h = 1.0f / lb.scale;
+	float pad_y = (float)lb.pad_y;
+#else
 	float scale_factor_w = (float)img_w / (float)YOLOV8_OB_INPUT_TENSOR_WIDTH;
 	float scale_factor_h = (float)img_h / (float)YOLOV8_OB_INPUT_TENSOR_HEIGHT;
+	float pad_y = 0.0f;
+#endif
+
+#if defined(IMX519_AF_H_)
+	// Report nothing until the lens has settled. Frames taken during an AF
+	// search (and before the first lock) are badly defocused: on exactly those
+	// frames the best_full_integer_quant model reported a full-frame "relax"
+	// with no cat in view (6 of 6 false positives, 2026-10-02), and a blurred
+	// cat's emotion is no more trustworthy. The image is still sent.
+	// While locked, the same holds once the score falls below the defocus
+	// threshold, until the re-focus is done or the picture is sharp again.
+	if (!imx519_af_output_ok())
+		nms_result.clear();
+#endif
 
 	for (int i = 0; i < (int)nms_result.size(); i++)
 	{
@@ -354,9 +439,17 @@ static void yolov8_ob_post_processing(tflite::MicroInterpreter* static_interpret
 		int idx = nms_result[i];
 
 		int32_t scaled_x = (int32_t)(boxes[idx].x * scale_factor_w);
-		int32_t scaled_y = (int32_t)(boxes[idx].y * scale_factor_h);
+		int32_t scaled_y = (int32_t)((boxes[idx].y - pad_y) * scale_factor_h);
 		int32_t scaled_w = (int32_t)(boxes[idx].w * scale_factor_w);
 		int32_t scaled_h = (int32_t)(boxes[idx].h * scale_factor_h);
+
+		// Clamp to image bounds (a letterboxed box can reach into the padding)
+		if (scaled_x < 0) { scaled_w += scaled_x; scaled_x = 0; }
+		if (scaled_y < 0) { scaled_h += scaled_y; scaled_y = 0; }
+		if (scaled_w < 0) scaled_w = 0;
+		if (scaled_h < 0) scaled_h = 0;
+		if (scaled_x + scaled_w > (int32_t)img_w) scaled_w = img_w - scaled_x;
+		if (scaled_y + scaled_h > (int32_t)img_h) scaled_h = img_h - scaled_y;
 
 		alg->obr[i].confidence   = confidences[idx];
 		alg->obr[i].class_idx    = class_idxs[idx];
@@ -364,14 +457,6 @@ static void yolov8_ob_post_processing(tflite::MicroInterpreter* static_interpret
 		alg->obr[i].bbox.y       = (uint32_t)scaled_y;
 		alg->obr[i].bbox.width   = (uint32_t)scaled_w;
 		alg->obr[i].bbox.height  = (uint32_t)scaled_h;
-
-		// Clamp to image bounds
-		if (scaled_x < 0) { scaled_w += scaled_x; scaled_x = 0; }
-		if (scaled_y < 0) { scaled_h += scaled_y; scaled_y = 0; }
-		if (scaled_w < 0) scaled_w = 0;
-		if (scaled_h < 0) scaled_h = 0;
-		if (scaled_x + scaled_w > (int32_t)img_w) scaled_w = img_w - scaled_x;
-		if (scaled_y + scaled_h > (int32_t)img_h) scaled_h = img_h - scaled_y;
 
 		el_box_t temp_el_box;
 		temp_el_box.score  = confidences[idx] * 100;
@@ -530,6 +615,18 @@ int cv_yolov8n_ob_run(struct_yolov8_ob_algoResult *algoresult_yolov8n_ob) {
 			SystemGetTick(&systick_1, &loop_cnt_1);
 		#endif
     	//get image from sensor and resize
+#if YOLOV8_OB_LETTERBOX
+		// Pad rows first; the uint8 -> int8 loop below turns 114 into -14.
+		yolov8_ob_letterbox_t lb = yolov8_ob_letterbox(img_w, img_h);
+		memset(yolov8n_ob_input->data.data, YOLOV8_OB_LETTERBOX_PAD, yolov8n_ob_input->bytes);
+		w_scale = (float)(img_w - 1) / (YOLOV8_OB_INPUT_TENSOR_WIDTH - 1);
+		h_scale = (float)(img_h - 1) / (lb.new_h - 1);
+		hx_lib_image_resize_BGR8U3C_to_RGB24_helium((uint8_t*)raw_addr,
+		                    (uint8_t*)yolov8n_ob_input->data.data
+		                        + lb.pad_y * YOLOV8_OB_INPUT_TENSOR_WIDTH * YOLOV8_OB_INPUT_TENSOR_CHANNEL,
+		                    img_w, img_h, ch,
+		                    YOLOV8_OB_INPUT_TENSOR_WIDTH, lb.new_h, w_scale, h_scale);
+#else
 		w_scale = (float)(img_w - 1) / (YOLOV8_OB_INPUT_TENSOR_WIDTH - 1);
 		h_scale = (float)(img_h - 1) / (YOLOV8_OB_INPUT_TENSOR_HEIGHT - 1);
 
@@ -537,6 +634,7 @@ int cv_yolov8n_ob_run(struct_yolov8_ob_algoResult *algoresult_yolov8n_ob) {
 		hx_lib_image_resize_BGR8U3C_to_RGB24_helium((uint8_t*)raw_addr, (uint8_t*)yolov8n_ob_input->data.data,  
 		                    img_w, img_h, ch, 
                         	YOLOV8_OB_INPUT_TENSOR_WIDTH, YOLOV8_OB_INPUT_TENSOR_HEIGHT, w_scale,h_scale);
+#endif
 		#ifdef EACH_STEP_TICK						
 			SystemGetTick(&systick_2, &loop_cnt_2);
 			dbg_printf(DBG_LESS_INFO,"Tick for resize image BGR8U3C_to_RGB24_helium for yolov8 OB:[%d]\r\n",(loop_cnt_2-loop_cnt_1)*CPU_CLK+(systick_1-systick_2));							
