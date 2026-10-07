@@ -1,0 +1,32 @@
+name: model-v5-checks
+
+on:
+  pull_request:
+    paths:
+      - "model/v5/**"
+      - "training/**"
+      - "flashing/flash_model_windows.py"
+      - "firmware/**"
+      - "tools/check_artifacts.py"
+      - ".github/workflows/model-v5-checks.yml"
+  push:
+    branches: [edge-model-himax]
+    paths:
+      - "model/v5/**"
+      - "training/**"
+      - "flashing/flash_model_windows.py"
+      - "firmware/**"
+      - "tools/check_artifacts.py"
+
+jobs:
+  check-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install numpy opencv-python-headless tflite ai-edge-litert pyserial "xmodem==0.4.7"
+      - name: Artifact paths, tensor contract, flasher guard, evaluation command
+        run: python tools/check_artifacts.py
