@@ -12,6 +12,7 @@
 #include "hx_drv_iic.h"
 #include "hx_drv_timer.h"
 #include "WE2_core.h"
+#include "WE2_device.h"
 #include "WE2_debug.h"
 
 #define AF_DBG(fmt, ...) dbg_printf(DBG_LESS_INFO, "[AF] " fmt, ##__VA_ARGS__)
@@ -157,13 +158,98 @@
  */
 #define REFOCUS_HALF_RANGE_DAC  512
 
-/* Settle frame count after DAC change (wait 1 frame for lens movement & exposure) */
-#define AF_SETTLE_FRAMES        1
+/*
+ * Frames to skip after a DAC change before scoring. 0 scores the very next
+ * frame. Measured 2026-10-07, still scene, 3 boot searches each: 0 takes 16
+ * frames instead of 32 (3.4 s vs 6.8 s) and the sharpness reached after lock
+ * was 0.6% lower (score sd is 1.8%). The next frame is partly exposed at the
+ * previous lens position, which pulls single samples by a few percent, but
+ * the top of the curve is flat enough that the lock lands within 3% of the
+ * peak. With a moving subject, 0 mis-locked 3 of 8 re-focuses and 1 did 1 of
+ * 5 - too few to tell apart - and 0 was still faster on average (4.1 s vs
+ * 6.9 s from move to sharp); the early check below catches the misses.
+ */
+#define AF_SETTLE_FRAMES        0
 
 /* Continuous AF (AF-C) Defocus Detection Parameters */
-#define DEFOCUS_DROP_THRESHOLD_PCT  65   /* Defocus triggered if score < 65% of locked score */
-#define DEFOCUS_CONFIRM_FRAMES      6    /* Must persist for 6 consecutive frames */
+/*
+ * Defocus when the score stays under DEFOCUS_DROP_THRESHOLD_PCT of
+ * locked_score for DEFOCUS_CONFIRM_MS and at least DEFOCUS_CONFIRM_MIN_FRAMES
+ * frames without a break; any frame back at or above it restarts the wait.
+ * Measured in time, not frames, so it does not change with the frame rate
+ * (4.3-4.6 fps here, set mostly by the model and the UART preview); the frame
+ * minimum keeps one long frame from confirming on its own.
+ *
+ * Measured 2026-10-07 on a still scene, 273 locked frames: the score varies by
+ * 1.8% (sd) and never stayed below 94.6% of locked_score for 3 frames in a row
+ * (lowest single frame 91.3%); hand waves dipped for 1-2 frames (<0.5 s).
+ * Earlier settings: 80% / 3 frames (~0.7 s) re-focused fastest but searched
+ * while the photo was still moving - 6 of the 13 re-focuses triggered below
+ * 65% mis-locked, none of the 8 triggered at 65-80%; 70% / 3 s was steady but
+ * slow (~4.6 s from move to sharp). 80% / 1 s plus the steady-picture wait
+ * below keeps the early trigger and moves the waiting to where it helps.
+ */
+#define DEFOCUS_DROP_THRESHOLD_PCT  80   /* Defocus if score < 80% of locked score... */
+#define DEFOCUS_CONFIRM_MS          1000 /* ...without a break for 1 s... */
+#define DEFOCUS_CONFIRM_MIN_FRAMES  3    /* ...and for at least 3 frames */
+
+/*
+ * Before a re-focus search starts, wait for the picture to stop changing: the
+ * last STEADY_FRAMES scores (lens not moving) must lie within STEADY_SPREAD_PCT
+ * of each other. A search run while the subject still moves locks on whatever
+ * one frame happened to show (see LOCK_VERIFY_MIN_PCT); on a still scene
+ * neighbouring frames differ by 1.5% (sd), while a photo being moved or a hand
+ * in front of the lens swings the score between 17% and 400%.
+ * The wait gives up after STEADY_MAX_WAIT_MS and searches anyway, so a subject
+ * that never stops still gets a search. If the picture settles back above the
+ * drop threshold (the subject returned), there is no search at all.
+ */
+#define STEADY_FRAMES               3
+#define STEADY_SPREAD_PCT           8
+#define STEADY_MAX_WAIT_MS          3000
+#define SCENE_RISE_CONFIRM_FRAMES   6    /* A rise past SCENE_RISE_THRESHOLD_PCT must persist 6 frames */
 #define LOCK_COOLDOWN_FRAMES        15   /* Cooldown frames after locking before monitoring */
+
+/*
+ * During the cooldown only a DROP is still watched, so a lock that is already
+ * blurred - the subject was still moving during the search - starts its
+ * DEFOCUS_CONFIRM_MS wait from the second frame after the lock instead of
+ * after the whole cooldown (~3.4 s).
+ * Measured 2026-10-07: such locks scored 52-71% from the first frame on.
+ * Allowed this many times in a row; after that the full cooldown applies again,
+ * so a lock whose score cannot be reached again (one sample pulled high by the
+ * previous lens position) cannot keep the lens searching.
+ */
+#define LOCK_EARLY_MAX_RETRIES      1
+
+/*
+ * Check the lock with a fresh frame at the locked position. A search keeps
+ * its single best sample, and while the subject is still moving one frame can
+ * score 25-30% above its neighbours (measured 2026-10-07: 1285:27779 among
+ * 20-24k). Locking on that sample left every later frame at 52-71% of it.
+ * Frame 0 after the lock can still be partly exposed at the last probe
+ * position (AF_SETTLE_FRAMES 0), so frame 1 is used. Below
+ * LOCK_VERIFY_MIN_PCT of the search's best it searches again (counted in
+ * LOCK_EARLY_MAX_RETRIES); otherwise the lower of the two becomes
+ * locked_score. This judges the lock itself, not a later defocus, so it has
+ * its own threshold: the outliers above sit 25-30% high, which 80% catches.
+ */
+#define LOCK_VERIFY_AGE             1
+#define LOCK_VERIFY_MIN_PCT         80
+
+/*
+ * When an AF-C re-focus window needs the full search. It used to escalate when
+ * the window's best was under 1.5x its flattest sample (FLAT_CURVE_RATIO_PCT)
+ * or under half the old locked_score. A +/-512 window around a nearby peak is
+ * flatter than the whole travel: 2026-10-07, three windows peaked inside at
+ * 1.28-1.45x, escalated, and the full search locked within 7-93 DAC of the
+ * same place, 3.6 s later. No re-focus in 21 measured needed more than 270 DAC.
+ * Now: escalate when the best sample is within REFOCUS_EDGE_DAC of a window
+ * edge that is not the end of the travel (the peak may lie beyond it), or the
+ * window is truly flat (a featureless scene; noise alone is about 1.05x).
+ */
+#define REFOCUS_EDGE_DAC            (2 * GS_TOL_DAC)
+#define REFOCUS_FLAT_RATIO_PCT      115
 
 /*
  * A large RISE also means the scene changed, and has to re-focus as well.
@@ -177,6 +263,13 @@
  * only makes the score RISE, which the old test could not see.
  */
 #define SCENE_RISE_THRESHOLD_PCT    250  /* Re-focus if score > 2.5x the locked score */
+
+/*
+ * 1: print every monitored frame's score while LOCKED, to measure how much the
+ * score moves on a still scene before tuning DEFOCUS_DROP_THRESHOLD_PCT and
+ * DEFOCUS_CONFIRM_MS. One short line per frame (~5 per second).
+ */
+#define AF_LOG_LOCKED_SCORE         0
 
 /*
  * A search only means something if the curve has a peak. On a scene with no
@@ -245,6 +338,7 @@ static imx519_af_ctrl_t g_af_ctrl = {
 /* Golden-section search state (see GS_* above). */
 static struct {
     uint16_t lo, hi;        /* current bracket */
+    uint16_t win_lo, win_hi; /* the bracket the search started with */
     uint16_t x1, x2;        /* interior probes, x1 < x2 */
     uint32_t f1, f2;        /* their scores */
     uint16_t best_dac;      /* best position actually measured, and its score */
@@ -260,6 +354,120 @@ static imx519_af_algo_t g_af_algo = IMX519_AF_ALGO_HYBRID;
  * to fail: if the subject moved further than the window, the best score inside
  * it is poor and the full search has to take over. */
 static bool g_gs_refocus = false;
+
+/* Re-searches started by the early check since the last lock that held
+ * through its cooldown (see LOCK_EARLY_MAX_RETRIES). */
+static uint8_t g_early_retries = 0;
+
+/* Set by a search's lock: the score is measured again at the locked position
+ * (LOCK_VERIFY_AGE) before it is used as the reference. */
+static bool g_verify_pending = false;
+
+/* DEFOCUS_CONFIRM_MS bookkeeping: whether the score is below the drop
+ * threshold, since when (milliseconds, af_now_ms()), and for how many frames. */
+static bool     g_drop_active = false;
+static uint32_t g_drop_since_ms = 0;
+static uint8_t  g_drop_frames = 0;
+
+/* Steady-picture wait before a re-focus (STEADY_*): the lens stays LOCKED
+ * while it runs. Last scores, oldest first, and when the wait began. */
+static bool     g_steady_wait = false;
+static uint32_t g_steady_since_ms = 0;
+static uint32_t g_steady_scores[STEADY_FRAMES];
+static uint8_t  g_steady_n = 0;
+
+/* Milliseconds since boot from the SysTick counter (24-bit, counting down at
+ * SystemCoreClock; g_time_loop counts its wraps - see SystemGetTick). Wraps
+ * after ~49 days; only differences are used. */
+static uint32_t af_now_ms(void)
+{
+    uint32_t systick, loops;
+    SystemGetTick(&systick, &loops);
+    uint64_t cycles = (uint64_t)loops * (SysTick_LOAD_RELOAD_Msk + 1U) + (SysTick_LOAD_RELOAD_Msk - systick);
+    return (uint32_t)(cycles / (SystemCoreClock / 1000U));
+}
+
+/* One frame of the drop test. True once the score has stayed below the
+ * threshold for DEFOCUS_CONFIRM_MS and DEFOCUS_CONFIRM_MIN_FRAMES frames. */
+static bool af_drop_confirmed(uint32_t cur_score, uint32_t drop_threshold)
+{
+    if (cur_score >= drop_threshold) {
+        g_drop_active = false;
+        return false;
+    }
+    if (!g_drop_active) {
+        g_drop_active = true;
+        g_drop_since_ms = af_now_ms();
+        g_drop_frames = 1;
+        return false;
+    }
+    if (g_drop_frames < 255U) {
+        g_drop_frames++;
+    }
+    return g_drop_frames >= DEFOCUS_CONFIRM_MIN_FRAMES &&
+           (af_now_ms() - g_drop_since_ms) >= DEFOCUS_CONFIRM_MS;
+}
+
+/* A re-focus is due: wait for a steady picture first (STEADY_*). The frame
+ * that confirmed it is the first sample (the lens has not moved). */
+static void af_begin_steady_wait(uint32_t cur_score)
+{
+    g_steady_wait = true;
+    g_steady_since_ms = af_now_ms();
+    g_steady_scores[0] = cur_score;
+    g_steady_n = 1;
+    AF_DBG("[AF-C] Waiting for a steady picture before re-focusing\n");
+}
+
+/*
+ * One frame of the steady-picture wait. Returns true when it has started a
+ * re-focus search; false while still waiting, or when the picture settled back
+ * between the drop and rise thresholds and monitoring simply resumes.
+ */
+static bool af_steady_step(uint32_t cur_score, uint32_t drop_threshold, uint32_t rise_threshold)
+{
+    uint32_t waited = af_now_ms() - g_steady_since_ms;
+    uint32_t lo = 0xFFFFFFFFU, hi = 0;
+    uint8_t i;
+
+    if (g_steady_n == STEADY_FRAMES) {
+        for (i = 1; i < STEADY_FRAMES; i++) {
+            g_steady_scores[i - 1] = g_steady_scores[i];
+        }
+        g_steady_n--;
+    }
+    g_steady_scores[g_steady_n++] = cur_score;
+
+    if (g_steady_n == STEADY_FRAMES) {
+        for (i = 0; i < STEADY_FRAMES; i++) {
+            if (g_steady_scores[i] < lo) lo = g_steady_scores[i];
+            if (g_steady_scores[i] > hi) hi = g_steady_scores[i];
+        }
+        if ((uint64_t)hi * 100U <= (uint64_t)lo * (100U + STEADY_SPREAD_PCT)) {
+            g_steady_wait = false;
+            g_drop_active = false;
+            if (lo >= drop_threshold && hi <= rise_threshold) {
+                AF_DBG("[AF-C] Steady again at %u (%u%% of locked) after %u ms - no search\n",
+                       (unsigned)cur_score,
+                       (unsigned)(g_af_ctrl.locked_score
+                                  ? ((uint64_t)cur_score * 100U) / g_af_ctrl.locked_score : 0U),
+                       (unsigned)waited);
+                return false;
+            }
+            AF_DBG("[AF-C] Picture steady after %u ms - re-focusing\n", (unsigned)waited);
+            imx519_af_trigger_refocus();
+            return true;
+        }
+    }
+    if (waited >= STEADY_MAX_WAIT_MS) {
+        g_steady_wait = false;
+        AF_DBG("[AF-C] Picture still changing after %u ms - re-focusing anyway\n",
+               (unsigned)waited);
+        imx519_af_trigger_refocus();
+        return true;
+    }
+    return false;
+}
 
 /* Coarse step of the run in progress: the sweep and the hybrid pass over the
  * travel with different steps, and the value is needed again when the pass
@@ -299,7 +507,9 @@ static void imx519_af_gs_begin(uint16_t lo, uint16_t hi)
 
     g_gs.lo = lo;
     g_gs.hi = hi;
-    g_gs.x1 = (uint16_t)(lo + span * GS_FRAC_NEAR / 1000U);
+    g_gs.win_lo = lo;
+    g_gs.win_hi = hi;
+    g_gs.x1 =(uint16_t)(lo + span * GS_FRAC_NEAR / 1000U);
     g_gs.x2 = (uint16_t)(lo + span * GS_FRAC_FAR / 1000U);
     g_gs.f1 = 0;
     g_gs.f2 = 0;
@@ -444,6 +654,8 @@ static void imx519_af_run_begin(void)
     }
     g_af_ctrl.defocus_counter = 0;
     g_af_ctrl.rise_counter = 0;
+    g_drop_active = false;
+    g_steady_wait = false;
 }
 
 /*
@@ -480,6 +692,7 @@ static void imx519_af_hold_without_lock(uint32_t best_score)
      * would keep re-triggering on nothing. */
     g_af_ctrl.locked_score = g_af_ctrl.min_score;
     g_af_ctrl.lock_cooldown = LOCK_COOLDOWN_FRAMES;
+    g_verify_pending = false;   /* nothing was locked on to check */
     g_af_ctrl.defocus_counter = 0;
     g_af_ctrl.rise_counter = 0;
     g_af_ctrl.state = IMX519_AF_STATE_LOCKED;
@@ -525,6 +738,17 @@ bool imx519_af_is_busy(void)
 imx519_af_state_t imx519_af_get_state(void)
 {
     return g_af_ctrl.state;
+}
+
+/*
+ * Whether this frame is sharp enough to report detections from: locked, and
+ * neither below the drop threshold (a defocus being confirmed) nor waiting for
+ * a steady picture before a re-focus. A hand passing the lens costs the 1-2
+ * frames it covers.
+ */
+bool imx519_af_output_ok(void)
+{
+    return g_af_ctrl.state == IMX519_AF_STATE_LOCKED && !g_drop_active && !g_steady_wait;
 }
 
 /*
@@ -634,8 +858,65 @@ bool imx519_af_process_frame(const uint8_t *y_plane, uint32_t width, uint32_t he
             return false;
         }
 
+        if (g_steady_wait) {
+            uint32_t cur_score = imx519_calc_focus_score(y_plane, width, height);
+#if AF_LOG_LOCKED_SCORE
+            AF_DBG("[MON] score %u locked %u ratio %u%% (waiting)\n", (unsigned)cur_score,
+                   (unsigned)g_af_ctrl.locked_score,
+                   (unsigned)(g_af_ctrl.locked_score
+                              ? ((uint64_t)cur_score * 100U) / g_af_ctrl.locked_score : 0U));
+#endif
+            return af_steady_step(cur_score,
+                (uint32_t)(((uint64_t)g_af_ctrl.locked_score * DEFOCUS_DROP_THRESHOLD_PCT) / 100U),
+                (uint32_t)(((uint64_t)g_af_ctrl.locked_score * SCENE_RISE_THRESHOLD_PCT) / 100U));
+        }
+
         if (g_af_ctrl.lock_cooldown > 0) {
+            /* Frames since the lock: 0 is the first one after it. */
+            uint16_t age = (uint16_t)(LOCK_COOLDOWN_FRAMES - g_af_ctrl.lock_cooldown);
+            bool verify = g_verify_pending && (age == LOCK_VERIFY_AGE);
+            bool early = (age > LOCK_VERIFY_AGE) && (g_early_retries < LOCK_EARLY_MAX_RETRIES);
+
             g_af_ctrl.lock_cooldown--;
+            if (verify || early) {
+                uint32_t cur_score = imx519_calc_focus_score(y_plane, width, height);
+                uint32_t drop_threshold = (g_af_ctrl.locked_score * DEFOCUS_DROP_THRESHOLD_PCT) / 100;
+#if AF_LOG_LOCKED_SCORE
+                AF_DBG("[MON] score %u locked %u ratio %u%% (cooldown)\n", (unsigned)cur_score,
+                       (unsigned)g_af_ctrl.locked_score,
+                       (unsigned)(g_af_ctrl.locked_score
+                                  ? ((uint64_t)cur_score * 100U) / g_af_ctrl.locked_score : 0U));
+#endif
+                if (verify) {
+                    g_verify_pending = false;
+                    if ((uint64_t)cur_score * 100U < (uint64_t)g_af_ctrl.locked_score * LOCK_VERIFY_MIN_PCT &&
+                        g_early_retries < LOCK_EARLY_MAX_RETRIES) {
+                        g_early_retries++;
+                        AF_DBG("[AF-C] Lock check: %u is under %d%% of the search's best %u - searching again\n",
+                               (unsigned)cur_score, LOCK_VERIFY_MIN_PCT,
+                               (unsigned)g_af_ctrl.locked_score);
+                        af_begin_steady_wait(cur_score);
+                        return false;
+                    }
+                    if (cur_score < g_af_ctrl.locked_score) {
+                        AF_DBG("[AF-C] Lock check: locked score %u -> %u (re-measured)\n",
+                               (unsigned)g_af_ctrl.locked_score, (unsigned)cur_score);
+                        g_af_ctrl.locked_score = cur_score;
+                    }
+                } else if (af_drop_confirmed(cur_score, drop_threshold)) {
+                    g_early_retries++;
+                    AF_DBG("[AF-C] Still blurred %u ms after the lock - searching again\n",
+                           (unsigned)(af_now_ms() - g_drop_since_ms));
+                    af_begin_steady_wait(cur_score);
+                    return false;
+                }
+            }
+            if (g_af_ctrl.lock_cooldown == 0) {
+                g_early_retries = 0;   /* this lock held through its cooldown */
+                if (!early) {
+                    g_drop_active = false;   /* nothing was watched: start fresh */
+                }
+            }
             return false;
         }
 
@@ -647,26 +928,37 @@ bool imx519_af_process_frame(const uint8_t *y_plane, uint32_t width, uint32_t he
             uint32_t rise_threshold =
                 (uint32_t)(((uint64_t)g_af_ctrl.locked_score * SCENE_RISE_THRESHOLD_PCT) / 100U);
 
+#if AF_LOG_LOCKED_SCORE
+            AF_DBG("[MON] score %u locked %u ratio %u%%\n", (unsigned)cur_score,
+                   (unsigned)g_af_ctrl.locked_score,
+                   (unsigned)(g_af_ctrl.locked_score
+                              ? ((uint64_t)cur_score * 100U) / g_af_ctrl.locked_score : 0U));
+#endif
+
             if (cur_score < drop_threshold) {
                 g_af_ctrl.rise_counter = 0;
-                g_af_ctrl.defocus_counter++;
-                if (g_af_ctrl.defocus_counter >= DEFOCUS_CONFIRM_FRAMES) {
-                    imx519_af_trigger_refocus();
-                    return true;
+                if (af_drop_confirmed(cur_score, drop_threshold)) {
+                    AF_DBG("[AF-C] Below %d%% for %u ms (%u frames)\n", DEFOCUS_DROP_THRESHOLD_PCT,
+                           (unsigned)(af_now_ms() - g_drop_since_ms), (unsigned)g_drop_frames);
+                    af_begin_steady_wait(cur_score);
+                    return false;
                 }
             } else if (cur_score > rise_threshold) {
                 /* Far more detail than what was locked on: the scene changed.
                  * With locked_score 0 - a search that found nothing - this is
                  * the only test that can fire, and it is what gets the lens
                  * moving again once something worth focusing on appears. */
-                g_af_ctrl.defocus_counter = 0;
+                g_drop_active = false;
                 g_af_ctrl.rise_counter++;
-                if (g_af_ctrl.rise_counter >= DEFOCUS_CONFIRM_FRAMES) {
-                    imx519_af_trigger_refocus();
-                    return true;
+                if (g_af_ctrl.rise_counter >= SCENE_RISE_CONFIRM_FRAMES) {
+                    g_af_ctrl.rise_counter = 0;
+                    AF_DBG("[AF-C] Above %d%% for %d frames\n", SCENE_RISE_THRESHOLD_PCT,
+                           SCENE_RISE_CONFIRM_FRAMES);
+                    af_begin_steady_wait(cur_score);
+                    return false;
                 }
             } else {
-                g_af_ctrl.defocus_counter = 0;
+                g_drop_active = false;
                 g_af_ctrl.rise_counter = 0;
                 /* Slowly adapt locked score with exponential moving average */
                 if (cur_score > g_af_ctrl.locked_score) {
@@ -813,6 +1105,7 @@ bool imx519_af_process_frame(const uint8_t *y_plane, uint32_t width, uint32_t he
                 g_af_ctrl.locked_score = g_af_ctrl.max_fine_score;
                 g_af_ctrl.lock_cooldown = LOCK_COOLDOWN_FRAMES;
                 g_af_ctrl.defocus_counter = 0;
+                g_verify_pending = true;
                 g_af_ctrl.state = IMX519_AF_STATE_LOCKED;
                 AF_DBG("====================================================\n");
                 AF_DBG(">>> AUTOFOCUS LOCKED! Optimal DAC = %d (Peak Score: %lu) <<<\n",
@@ -884,21 +1177,37 @@ bool imx519_af_process_frame(const uint8_t *y_plane, uint32_t width, uint32_t he
             }
 
             if (((uint32_t)g_gs.hi - g_gs.lo) <= GS_TOL_DAC || g_gs.evals >= GS_MAX_EVALS) {
-                if (g_gs_refocus &&
-                    (g_gs.best_score < (g_af_ctrl.locked_score / 2) ||
-                     imx519_af_curve_is_flat(g_gs.best_score))) {
-                    /* Nothing worth locking inside the window: the subject
-                     * moved further than it covers, or the scene changed
-                     * altogether. The window is local, so a flat result here
-                     * says nothing about the rest of the travel - search it
-                     * all before concluding there is no peak anywhere. */
-                    AF_DBG("[AF-C] Best in window only %lu (flattest %lu, locked %lu) - escalating to a full search\n",
-                           g_gs.best_score, g_af_ctrl.min_score, g_af_ctrl.locked_score);
-                    imx519_af_trigger();
-                    return true;
+                if (g_gs_refocus) {
+                    /* See REFOCUS_EDGE_DAC: the peak may lie beyond the window
+                     * edge the best sample sits against, or the window has no
+                     * peak at all. Either way the rest of the travel has to be
+                     * searched before concluding anything. */
+                    bool at_lo = (g_gs.win_lo > IMX519_AF_DAC_MIN) &&
+                                 (g_gs.best_dac <= g_gs.win_lo + REFOCUS_EDGE_DAC);
+                    bool at_hi = (g_gs.win_hi < IMX519_AF_DAC_MAX) &&
+                                 ((uint32_t)g_gs.best_dac + REFOCUS_EDGE_DAC >= g_gs.win_hi);
+                    bool flat = (uint64_t)g_gs.best_score * 100U <
+                                (uint64_t)g_af_ctrl.min_score * REFOCUS_FLAT_RATIO_PCT;
+                    if (at_lo || at_hi || flat) {
+                        AF_DBG("[AF-C] Window best %lu at DAC %u (flattest %lu, window %u~%u)%s%s - escalating to a full search\n",
+                               g_gs.best_score, (unsigned)g_gs.best_dac, g_af_ctrl.min_score,
+                               (unsigned)g_gs.win_lo, (unsigned)g_gs.win_hi,
+                               (at_lo || at_hi) ? " at an edge" : "", flat ? " flat" : "");
+                        imx519_af_trigger();
+                        return true;
+                    }
                 }
+                /* A re-focus window that got here already passed its own,
+                 * looser flatness test (REFOCUS_FLAT_RATIO_PCT); the 1.5x test
+                 * is for the whole travel. Applying it here too held the lens
+                 * without a lock on a window that peaked at 1.45x (2026-10-07,
+                 * 1232:12815 vs 1474:8840) and made the flattest sample the
+                 * reference, so the next move stayed above the drop threshold
+                 * for 16 s. Only a window scoring zero everywhere is held. */
+                bool was_refocus = g_gs_refocus;
                 g_gs_refocus = false;
-                if (imx519_af_curve_is_flat(g_gs.best_score)) {
+                if (was_refocus ? (g_gs.best_score == 0)
+                                : imx519_af_curve_is_flat(g_gs.best_score)) {
                     imx519_af_hold_without_lock(g_gs.best_score);
                     return false;
                 }
@@ -907,6 +1216,7 @@ bool imx519_af_process_frame(const uint8_t *y_plane, uint32_t width, uint32_t he
                 g_af_ctrl.locked_score = g_gs.best_score;
                 g_af_ctrl.lock_cooldown = LOCK_COOLDOWN_FRAMES;
                 g_af_ctrl.defocus_counter = 0;
+                g_verify_pending = true;
                 g_af_ctrl.state = IMX519_AF_STATE_LOCKED;
                 AF_DBG("====================================================\n");
                 AF_DBG(">>> AUTOFOCUS LOCKED! Optimal DAC = %d (Peak Score: %lu) <<< [%s, %u narrowing measurements]\n",
