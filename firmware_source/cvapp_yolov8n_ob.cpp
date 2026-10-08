@@ -63,12 +63,19 @@ volatile uint8_t g_preview_divider = 1;
 #endif
 
 /*
- * Letterbox the capture into the square model input, as the model was trained
- * (Ultralytics LetterBox): one scale factor for both axes, the unused rows
- * filled with the pad value (114 = Ultralytics' default grey). 0 stretches the
- * 320x240 capture to 192x192 instead, as the SDK example did.
+ * How the 320x240 capture becomes the square model input:
+ *   1: letterbox (Ultralytics LetterBox, the default): one scale factor for
+ *      both axes, so the cat keeps its proportions; the unused rows are filled
+ *      with YOLOV8_OB_LETTERBOX_PAD (114 = Ultralytics' default grey).
+ *   0: stretch to 192x192, as the SDK example does.
+ * The tensor does not say which one a model was trained with. Measured on 336
+ * test/val cats, frames cut to 4:3, emotion accuracy letterboxed vs stretched:
+ * v3 QAT int8 80.7% vs 74.4%; model/v5 int8 (trained on squashed frames)
+ * 91.1% vs 93.2%. Override from the build with -DYOLOV8_OB_LETTERBOX=0.
  */
+#ifndef YOLOV8_OB_LETTERBOX
 #define YOLOV8_OB_LETTERBOX            1
+#endif
 #define YOLOV8_OB_LETTERBOX_PAD        114
 
 #if YOLOV8_OB_LETTERBOX
@@ -304,6 +311,32 @@ static void  yolov8_NMSBoxes(std::vector<box> &boxes,std::vector<float> &confide
 
 
 #if CHANGE_YOLOV8_OB_OUPUT_SHAPE
+/*
+ * Box units differ between exports of the same network: some models output
+ * cx, cy, w, h in input pixels (0-192, e.g. model/v5/cat_emotion_v5_vela.tflite),
+ * others normalised to 0-1 (the *_himax_official variants, the single-output
+ * models). The box tensor's quantization tells them apart: the largest value
+ * it can represent, (127 - zero_point) * scale, is about 1 for normalised boxes
+ * and about 192 for pixel boxes. The thresholds are the ones the flasher and
+ * tools/check_artifacts.py use (top <= 2 normalised, top >= 64 pixel), and
+ * check_artifacts.py checks that they stay in step with this file.
+ */
+#define YOLOV8_OB_BOX_NORMALIZED_MAX_TOP   2.0f
+#define YOLOV8_OB_BOX_PIXEL_MIN_TOP        64.0f
+
+/* Factor that turns a dequantized box value into input pixels: the input size
+ * for normalised boxes, 1 for pixel boxes, 0 if the format is unknown. */
+static float yolov8_ob_box_unit(float scale, int zero_point)
+{
+	float top = (127.0f - (float)zero_point) * scale;
+
+	if (top <= YOLOV8_OB_BOX_NORMALIZED_MAX_TOP)
+		return (float)YOLOV8_OB_INPUT_TENSOR_WIDTH;
+	if (top >= YOLOV8_OB_BOX_PIXEL_MIN_TOP)
+		return 1.0f;
+	return 0.0f;
+}
+
 static void yolov8_ob_post_processing(tflite::MicroInterpreter* static_interpreter,float modelScoreThreshold, float modelNMSThreshold, struct_yolov8_ob_algoResult *alg,	std::forward_list<el_box_t> &el_algo)
 {
 	// JPEG stream resolution - boxes are scaled to this space
@@ -348,6 +381,22 @@ static void yolov8_ob_post_processing(tflite::MicroInterpreter* static_interpret
 	float output_2_scale  = ((TfLiteAffineQuantization*)(output_2->quantization.params))->scale->data[0];
 	int   output_2_zeropoint= ((TfLiteAffineQuantization*)(output_2->quantization.params))->zero_point->data[0];
 
+	float box_unit = yolov8_ob_box_unit(output_scale, output_zeropoint);
+	{
+		static bool box_unit_logged = false;
+		if (!box_unit_logged) {
+			box_unit_logged = true;
+			xprintf("[YOLOV8] box output: %s (max %d.%02d) -> x%d\r\n",
+			        box_unit == 1.0f ? "pixel 0-192" : box_unit > 1.0f ? "normalized 0-1" : "UNKNOWN units",
+			        (int)((127 - output_zeropoint) * output_scale),
+			        (int)((127 - output_zeropoint) * output_scale * 100.0f) % 100,
+			        (int)box_unit);
+		}
+	}
+	if (box_unit == 0.0f) {
+		return;   // neither format: report nothing rather than boxes in the wrong place
+	}
+
 	std::vector<uint16_t> class_idxs;
 	std::vector<float>    confidences;
 	std::vector<box>      boxes;
@@ -375,20 +424,17 @@ static void yolov8_ob_post_processing(tflite::MicroInterpreter* static_interpret
 		for (int k = 0; k < 4; k++) {
 			int raw  = (int)output->data.int8[k * N_anchors + a];
 			/*
-			 * This head is quantized with scale 1/255 and zero point -128, so
-			 * the dequantized value spans 0.0 to 1.0: the coordinates are
-			 * NORMALISED, not the "absolute pixel coordinates (0~192)" the
-			 * comment below assumes. Measured on hardware 2026-09-22: without
-			 * this multiply every box collapses to [0,0,1,0] once
-			 * scale_factor_* and the cast to integer are applied. The model
-			 * takes a square input, so one factor serves both axes.
+			 * To input pixels (see yolov8_ob_box_unit). Normalised boxes left
+			 * unscaled collapse to [0,0,1,0] once scale_factor_* and the cast
+			 * to integer are applied (measured 2026-09-22); pixel boxes scaled
+			 * again land ~192x too far and get clamped to the frame edge. The
+			 * model takes a square input, so one factor serves both axes.
 			 */
-			dist[k]  = ((float)raw - (float)output_zeropoint) * output_scale
-			           * (float)YOLOV8_OB_INPUT_TENSOR_WIDTH;
+			dist[k]  = ((float)raw - (float)output_zeropoint) * output_scale * box_unit;
 		}
 
 		box bbox;
-		// The exported model outputs [cx, cy, w, h] in absolute pixel coordinates (0~192)
+		// [cx, cy, w, h] in input pixels (0~192)
 		bbox.x = dist[0] - (0.5f * dist[2]);  // x_min
 		bbox.y = dist[1] - (0.5f * dist[3]);  // y_min
 		bbox.w = dist[2];                     // width

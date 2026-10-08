@@ -7,6 +7,7 @@ on:
       - "training/**"
       - "flashing/flash_model_windows.py"
       - "firmware/**"
+      - "firmware_source/**"
       - "tools/check_artifacts.py"
       - ".github/workflows/model-v5-checks.yml"
   push:
@@ -16,6 +17,7 @@ on:
       - "training/**"
       - "flashing/flash_model_windows.py"
       - "firmware/**"
+      - "firmware_source/**"
       - "tools/check_artifacts.py"
 
 jobs:
