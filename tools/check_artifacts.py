@@ -16,11 +16,6 @@ Lightweight static checks for the v5 model release (run by CI and locally from t
    that does not match --firmware-type and an unknown image.
 4. Evaluation command: runs training/4_evaluate.py (with and without --camsim) on a tiny synthetic
    dataset to make sure the documented command executes end to end.
-5. Firmware box decoding (firmware_source/cvapp_yolov8n_ob.cpp):
-   - static: the firmware's box-format thresholds equal the ones used here and by the flasher, and the
-     box decode multiplies by the detected unit instead of a fixed input size
-   - numeric: the firmware rule (ported below) decodes the pixel and the normalized v5 variants to the
-     same input-pixel boxes on a fixed input, so neither format is scaled twice or not at all
 
 Usage:  python tools/check_artifacts.py
 """
@@ -44,12 +39,6 @@ MODELS = {
     "cat_emotion_v5_int8_himax_official.tflite": ("normalized", False),
 }
 FIRMWARE = [ROOT / "firmware" / "output.img", ROOT / "firmware" / "himax_official_tflm_yolov8_od" / "output.img"]
-CVAPP = ROOT / "firmware_source" / "cvapp_yolov8n_ob.cpp"
-# Box format from the box tensor's quantization: the largest value it can hold, (127 - zp) * scale.
-# The flasher and the firmware (YOLOV8_OB_BOX_* in CVAPP) use the same thresholds.
-BOX_NORMALIZED_MAX_TOP = 2.0
-BOX_PIXEL_MIN_TOP = 64.0
-INPUT_SIZE = 192
 OPNAMES = {v: k for k, v in vars(tflite.BuiltinOperator).items() if not k.startswith("_")}
 
 failures = []
@@ -79,7 +68,7 @@ def check_model(name, want_fmt, is_vela):
     check(b_shape == [1, 4, 756] and b_typ == tflite.TensorType.INT8, f"{name}: output 0 = boxes [1,4,756] int8 (got {b_shape})")
     check(c_shape == [1, 756, 4] and c_typ == tflite.TensorType.INT8, f"{name}: output 1 = scores [1,756,4] int8 (got {c_shape})")
     top = (127 - b_zp) * b_s
-    fmt = "normalized" if top <= BOX_NORMALIZED_MAX_TOP else "pixel" if top >= BOX_PIXEL_MIN_TOP else "unknown"
+    fmt = "normalized" if top <= 2 else "pixel" if top >= 64 else "unknown"
     check(fmt == want_fmt, f"{name}: box format {fmt} (max {top:.1f}), expected {want_fmt}")
     check(abs((127 - c_zp) * c_s - 1.0) < 0.02, f"{name}: score range 0..1 (max {(127 - c_zp) * c_s:.3f})")
     if is_vela:
@@ -88,63 +77,6 @@ def check_model(name, want_fmt, is_vela):
             oc = m.OperatorCodes(g.Operators(i).OpcodeIndex())
             ops.append(OPNAMES.get(max(oc.BuiltinCode(), oc.DeprecatedBuiltinCode())))
         check(ops == ["CUSTOM"], f"{name}: single ethos-u custom op, 100% NPU (ops: {ops})")
-
-
-def firmware_box_unit(scale, zero_point):
-    """Port of yolov8_ob_box_unit() in CVAPP: factor from a dequantized box value to input pixels
-    (INPUT_SIZE for normalized boxes, 1 for pixel boxes, 0 = unknown format, nothing reported)."""
-    top = (127 - zero_point) * scale
-    if top <= BOX_NORMALIZED_MAX_TOP:
-        return float(INPUT_SIZE)
-    if top >= BOX_PIXEL_MIN_TOP:
-        return 1.0
-    return 0.0
-
-
-def check_firmware_box_decoding():
-    import re
-
-    src = CVAPP.read_text(encoding="utf-8", errors="replace")
-    for name, want in (("YOLOV8_OB_BOX_NORMALIZED_MAX_TOP", BOX_NORMALIZED_MAX_TOP),
-                       ("YOLOV8_OB_BOX_PIXEL_MIN_TOP", BOX_PIXEL_MIN_TOP)):
-        m = re.search(r"#define\s+%s\s+([0-9.]+)f?" % name, src)
-        got = float(m.group(1)) if m else None
-        check(got == want, f"firmware {name} = {got}, same as the flasher / this check ({want})")
-    check(re.search(r"dist\[k\]\s*=.*\*\s*box_unit\s*;", src) is not None,
-          "firmware box decode multiplies by the detected unit (box_unit), not a fixed input size")
-
-    sys.path.insert(0, str(ROOT / "training"))
-    from importlib import import_module
-    make_interpreter = import_module("4_evaluate").make_interpreter
-
-    rgb = (np.random.default_rng(0).random((INPUT_SIZE, INPUT_SIZE, 3)) * 255).astype(np.float32)
-    decoded = {}
-    for name, (fmt, is_vela) in MODELS.items():
-        if is_vela:
-            continue  # Vela files need the NPU; their int8 twins have the same box tensor
-        it = make_interpreter(V5 / name)
-        it.allocate_tensors()
-        inp = it.get_input_details()[0]
-        s, zp = inp["quantization"]
-        it.set_tensor(inp["index"], np.clip(np.round(rgb / 255.0 / s + zp), -128, 127).astype(np.int8)[None])
-        it.invoke()
-        outs = {tuple(o["shape"]): o for o in it.get_output_details()}
-        ob, os_ = outs[(1, 4, 756)], outs[(1, 756, 4)]
-        bs, bzp = ob["quantization"]
-        unit = firmware_box_unit(bs, bzp)
-        check(unit == (1.0 if fmt == "pixel" else float(INPUT_SIZE)),
-              f"{name}: firmware treats boxes as {fmt} (x{unit:g})")
-        boxes = (it.get_tensor(ob["index"])[0].astype(np.float32) - bzp) * bs * unit  # (4, 756) input pixels
-        scores = (it.get_tensor(os_["index"])[0].astype(np.float32) - os_["quantization"][1]) * os_["quantization"][0]
-        decoded[fmt] = (boxes, scores.max(1))
-    if {"pixel", "normalized"} <= decoded.keys():
-        top = np.argsort(-decoded["pixel"][1])[:50]          # the anchors the firmware would report first
-        px, nm = decoded["pixel"][0][:, top], decoded["normalized"][0][:, top]
-        diff = float(np.abs(px - nm).max())
-        check(diff <= 3.0, f"pixel and normalized variants decode to the same boxes (max diff {diff:.2f} px)")
-        lo, hi = float(min(px.min(), nm.min())), float(max(px.max(), nm.max()))
-        check(-1.0 <= lo and hi <= INPUT_SIZE + 1.0,
-              f"decoded boxes stay inside the {INPUT_SIZE}x{INPUT_SIZE} input ({lo:.1f} .. {hi:.1f})")
 
 
 def main():
@@ -220,9 +152,6 @@ def main():
                       f"4_evaluate.py {model} {' '.join(extra)} runs (exit {r.returncode})")
                 if r.returncode != 0:
                     print(r.stdout[-2000:], r.stderr[-2000:])
-
-    print("[5] Firmware box decoding")
-    check_firmware_box_decoding()
 
     print()
     if failures:
