@@ -318,8 +318,8 @@ static void  yolov8_NMSBoxes(std::vector<box> &boxes,std::vector<float> &confide
  * models). The box tensor's quantization tells them apart: the largest value
  * it can represent, (127 - zero_point) * scale, is about 1 for normalised boxes
  * and about 192 for pixel boxes. The thresholds are the ones the flasher and
- * tools/check_artifacts.py use (top <= 2 normalised, top >= 64 pixel), and
- * check_artifacts.py checks that they stay in step with this file.
+ * tools/check_artifacts.py use (top <= 2 normalised, top >= 64 pixel); keep
+ * them in step when changing either side.
  */
 #define YOLOV8_OB_BOX_NORMALIZED_MAX_TOP   2.0f
 #define YOLOV8_OB_BOX_PIXEL_MIN_TOP        64.0f
