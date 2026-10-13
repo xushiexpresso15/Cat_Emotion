@@ -67,6 +67,10 @@ bool imx519_af_is_busy(void);
 /* Query current AF state */
 imx519_af_state_t imx519_af_get_state(void);
 
+/* True when the current frame is in focus enough to report detections: locked,
+ * and no defocus being confirmed or re-focus pending */
+bool imx519_af_output_ok(void);
+
 
 /* Black level of the captured buffer, measured with the lens covered: RAW
  * Bayer, WDMA3 and JPEG all read 40 (sensor DATA_PEDESTAL is 64 in 10-bit;
