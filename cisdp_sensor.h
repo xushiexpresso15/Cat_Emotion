@@ -77,6 +77,9 @@ void imx519_set_analog_gain_code(uint16_t code);
  * calibrate(): centre 50% of the frame must be white/grey; call on the frame
  * as captured, before apply(). */
 void imx519_swwb_apply(void);
+void imx519_set_preview_jpeg_sz(uint32_t n);
+/* Encode WDMA3 planar BGR (after SWWB) into dst as baseline JPEG. */
+uint32_t imx519_encode_preview_jpeg(uint8_t *dst, uint32_t dst_cap);
 
 #if IMX519_RAW_DUMP_MODE
 /* RAW capture test firmware: send the current WDMA2 raw frame over UART. */

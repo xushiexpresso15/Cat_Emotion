@@ -78,8 +78,10 @@ typedef enum
 #endif
 #define IMX519_HW2x2_CROP_WIDTH			320
 #define IMX519_HW2x2_CROP_HEIGHT		240
-#define IMX519_HW5x5_CROP_WIDTH			320
-#define IMX519_HW5x5_CROP_HEIGHT		240
+/* 256x192 (64x16 aligned) is 64% of 320x240 pixels. Fur/detail JPEGs at
+ * 320x240 still overflow UART 921600 inside the 94 ms NPU window. */
+#define IMX519_HW5x5_CROP_WIDTH			256
+#define IMX519_HW5x5_CROP_HEIGHT		192
 
 #define IMX519_EXPOSURE_DEFAULT			(0x0400)
 /*
@@ -234,8 +236,8 @@ typedef enum
 #endif
 
 #define DP_HW5X5_DEMOSLPF_ROUNDMODE DEMOSLPF_ROUNDMODE_FLOOR
-#define DP_HW5X5_CROP_START_X 		0
-#define DP_HW5X5_CROP_START_Y 		0
+#define DP_HW5X5_CROP_START_X 		32
+#define DP_HW5X5_CROP_START_Y 		24
 #define DP_HW5X5_CROP_WIDTH 		IMX519_HW5x5_CROP_WIDTH
 #define DP_HW5X5_CROP_HEIGHT 		IMX519_HW5x5_CROP_HEIGHT
 #define DP_HW5X5_OUT_WIDTH 			IMX519_HW5x5_CROP_WIDTH
@@ -248,6 +250,9 @@ typedef enum
 #define DP_JPEG_ENC_WIDTH 			DP_HW5X5_OUT_WIDTH
 #define DP_JPEG_ENC_HEIGHT 			DP_HW5X5_OUT_HEIGHT
 #define DP_JPEG_ENCTYPE 			JPEG_ENC_TYPE_YUV420
+/* 4X = higher compression (Seeed/Himax guide). 10X is higher quality and
+ * grew fur/detail JPEGs past the UART budget, so firmware dropped the
+ * image and the dashboard froze on the last small frame. */
 #define DP_JPEG_ENCQTABLE 			JPEG_ENC_QTABLE_4X
 
 /*
@@ -261,30 +266,38 @@ _Static_assert((IMX519_SENSOR_WIDTH % 64) == 0,
 		"IMX519_SENSOR_WIDTH must be a multiple of 64 (WE2 WDMA line alignment)");
 _Static_assert((IMX519_SENSOR_HEIGHT % 16) == 0,
 		"IMX519_SENSOR_HEIGHT must be a multiple of 16 (WE2 WDMA line alignment)");
+_Static_assert((IMX519_HW5x5_CROP_WIDTH % 64) == 0,
+		"IMX519_HW5x5_CROP_WIDTH must be a multiple of 64 (WE2 WDMA line alignment)");
+_Static_assert((IMX519_HW5x5_CROP_HEIGHT % 16) == 0,
+		"IMX519_HW5x5_CROP_HEIGHT must be a multiple of 16");
+_Static_assert((DP_HW5X5_CROP_START_X + IMX519_HW5x5_CROP_WIDTH) <= IMX519_INP_OUT_WIDTH,
+		"HW5x5 crop exceeds INP output width");
+_Static_assert((DP_HW5X5_CROP_START_Y + IMX519_HW5x5_CROP_HEIGHT) <= IMX519_INP_OUT_HEIGHT,
+		"HW5x5 crop exceeds INP output height");
 _Static_assert((IMX519_INP_CROP_START_X + IMX519_INP_CROP_WIDTH) <= IMX519_SENSOR_WIDTH,
 		"IMX519_INP_CROP_START_X + IMX519_INP_CROP_WIDTH exceeds IMX519_SENSOR_WIDTH");
 _Static_assert((IMX519_INP_CROP_START_Y + IMX519_INP_CROP_HEIGHT) <= IMX519_SENSOR_HEIGHT,
 		"IMX519_INP_CROP_START_Y + IMX519_INP_CROP_HEIGHT exceeds IMX519_SENSOR_HEIGHT");
 
 /*
- * Software black level + white balance on the WDMA3 buffer (the model input;
- * the JPEG preview is not affected).
+ * Sensor digital-gain registers 0x0210-0x0217 accept writes (readback matches)
+ * but do not change pixels on this module. JPEG colour is corrected in
+ * software from the demosaiced WDMA3 buffer after SWWB (see
+ * imx519_encode_preview_jpeg). These values are kept for register continuity.
+ */
+#define IMX519_HW_WB_R				(1.60f)
+#define IMX519_HW_WB_GR				(0.85f)
+#define IMX519_HW_WB_GB				(0.85f)
+#define IMX519_HW_WB_B				(1.80f)
+
+/*
+ * Software black level + white balance on the WDMA3 buffer (planar B,G,R).
+ * This LUT is the colour correction that actually changes pixels. After it
+ * runs, the preview JPEG is re-encoded from this buffer.
  *
- * Black level 40: WDMA3 with the lens covered read 39.7 / 40.0 / 39.7 (B/G/R
- * planes, mode 40) at 512 lines x16, and the JPEG dark frame read 40 at both
- * 512 lines x16 and 64 lines x1 - so it does not depend on gain. The sensor's
- * DATA_PEDESTAL is 64 (10-bit); WE2 does not map that to 64>>2 = 16.
- *
- * Gains (x1000) calibrated 2026-09-14 on white paper filling the centre 50%,
- * under the room lighting in use, at 512 lines x16 analog: ROI means B 104.6,
- * G 146.2, R 94.4 (no clipping); 4 calibrations gave B 1642..1644 and
- * R 1952..1958. They are only valid for that light source - recalibrate with
- * UART key 'f' under different lighting (calibration is RAM only; copy the
- * printed gains here to keep them).
- * The WE2 output is not linear in exposure (the (mean - 40) increment per
- * exposure doubling measured 17.3, 24.2, 43.6 for 128..1024 lines), so fixed
- * gains are exact only near the brightness they were calibrated at: about
- * -3%..+8% off over 128..1024 lines.
+ * Black level 40: WDMA3 with the lens covered read ~40. Gains (x1000)
+ * calibrated 2026-09-14 on white paper, centre 50%, 512 lines x16 analog:
+ * ROI means B 104.6, G 146.2, R 94.4.
  */
 #define IMX519_SWWB_BLACK_LEVEL     (40)
 #define IMX519_SWWB_GAIN_B_X1000    (1643)

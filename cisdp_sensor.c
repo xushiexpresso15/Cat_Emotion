@@ -577,17 +577,13 @@ int cisdp_dp_init(bool inp_init, SENSORDPLIB_PATH_E dp_type, evthandlerdp_CBEven
     hw5x5_cfg.demoslpf_roundmode = DP_HW5X5_DEMOSLPF_ROUNDMODE;
     hw5x5_cfg.hw55_crop_stx = DP_HW5X5_CROP_START_X;
     hw5x5_cfg.hw55_crop_sty = DP_HW5X5_CROP_START_Y;
-    hw5x5_cfg.hw55_in_width = (subs==APP_DP_RES_RGB640x480_INP_SUBSAMPLE_1X||subs==APP_DP_RES_YUV640x480_INP_SUBSAMPLE_1X)?
-    		640:(subs==APP_DP_RES_RGB640x480_INP_SUBSAMPLE_2X||subs==APP_DP_RES_YUV640x480_INP_SUBSAMPLE_2X)?
-    		320:640;
-    hw5x5_cfg.hw55_in_height = (subs==APP_DP_RES_RGB640x480_INP_SUBSAMPLE_1X||subs==APP_DP_RES_YUV640x480_INP_SUBSAMPLE_1X)?
-    		480:(subs==APP_DP_RES_RGB640x480_INP_SUBSAMPLE_2X||subs==APP_DP_RES_YUV640x480_INP_SUBSAMPLE_2X)?
-    		240:480;
+    hw5x5_cfg.hw55_in_width = DP_HW5X5_CROP_WIDTH;
+    hw5x5_cfg.hw55_in_height = DP_HW5X5_CROP_HEIGHT;
 
     //JPEG Cfg
     jpeg_cfg.jpeg_path = DP_JPEG_PATH;
-    jpeg_cfg.enc_width = hw5x5_cfg.hw55_in_width;
-    jpeg_cfg.enc_height = hw5x5_cfg.hw55_in_height;
+    jpeg_cfg.enc_width = DP_HW5X5_CROP_WIDTH;
+    jpeg_cfg.enc_height = DP_HW5X5_CROP_HEIGHT;
     jpeg_cfg.jpeg_enctype = DP_JPEG_ENCTYPE;
     jpeg_cfg.jpeg_encqtable = DP_JPEG_ENCQTABLE;
 
@@ -912,18 +908,23 @@ void cisdp_sensor_start()
     dbg_printf(DBG_LESS_INFO, "IMX519 LIVE STREAMING REG 0x0100: 0x%02X (%s)\n", 
                st_mode, (st_mode == 0x01) ? "STREAMING ACTIVE" : "STANDBY/STOPPED");
 
-    /* Phase 118: Balanced Color Gains (Gr=0.85x, Gb=0.85x, R=1.60x, B=1.80x) */
+    /* Per-channel digital gain: JPEG and model share this colour correction. */
 #if IMX519_RAW_DUMP_MODE
     /* RAW capture test: per-channel sensor gains at unity. They were measured
      * to have no effect on pixels; forced to 1.0 so the test does not depend
      * on that. */
     imx519_set_hardware_white_balance(1.0f, 1.0f, 1.0f, 1.0f);
 #else
-    imx519_set_hardware_white_balance(1.60f, 0.85f, 0.85f, 1.80f);
+    imx519_set_hardware_white_balance(IMX519_HW_WB_R, IMX519_HW_WB_GR,
+                                      IMX519_HW_WB_GB, IMX519_HW_WB_B);
 #endif
 
-    /* Initialize IMX519 Auto-Focus Subsystem with AK7375 VCM */
+    /* Initialize IMX519 Auto-Focus Subsystem with AK7375 VCM.
+     * init() parks the lens at the default DAC and leaves the state machine
+     * idle. Trigger one hybrid sweep so continuous AF starts on the first
+     * frames without a host command. */
     imx519_af_init();
+    imx519_af_trigger();
 }
 
 
@@ -997,8 +998,18 @@ uint32_t app_get_jpeg_addr()
 	return g_wdma2_baseaddr;
 }
 
+static uint32_t s_preview_jpeg_sz = 0;
+
+void imx519_set_preview_jpeg_sz(uint32_t n)
+{
+	s_preview_jpeg_sz = n;
+}
+
 uint32_t app_get_jpeg_sz()
 {
+	if (s_preview_jpeg_sz != 0) {
+		return s_preview_jpeg_sz;
+	}
     hx_InvalidateDCache_by_Addr((volatile void *)g_jpegautofill_addr, 32);
 	return *((uint32_t*)g_jpegautofill_addr);
 }
