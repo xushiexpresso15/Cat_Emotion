@@ -159,7 +159,9 @@ volatile size_t   g_total_frames      = 0;
 volatile size_t   g_last_frame_bytes  = 0;
 volatile uint32_t g_last_frame_millis = 0;
 
-void initSharedBuffer() { PB.mutex = xSemaphoreCreateMutex(); }
+void initSharedBuffer() {
+    PB.mutex = xSemaphoreCreateMutex();
+}
 
 void initStatInfo() {
     SI.mutex                        = xSemaphoreCreateMutex();
@@ -265,6 +267,28 @@ static BBoxCoords s_distress_snapshot_bbox = {0, 0, 0, 0, -1, 0.0f};
 static bool       s_has_distress_snapshot = false;
 static uint32_t   s_distress_snapshot_time = 0;
 
+static float bboxIou(int ax, int ay, int aw, int ah, int bx, int by, int bw, int bh) {
+    int ax2 = ax + aw;
+    int ay2 = ay + ah;
+    int bx2 = bx + bw;
+    int by2 = by + bh;
+    int x1 = ax > bx ? ax : bx;
+    int y1 = ay > by ? ay : by;
+    int x2 = ax2 < bx2 ? ax2 : bx2;
+    int y2 = ay2 < by2 ? ay2 : by2;
+    int iw = x2 - x1;
+    int ih = y2 - y1;
+    if (iw <= 0 || ih <= 0) {
+        return 0.0f;
+    }
+    float inter = (float)iw * (float)ih;
+    float uni = (float)aw * (float)ah + (float)bw * (float)bh - inter;
+    if (uni <= 0.0f) {
+        return 0.0f;
+    }
+    return inter / uni;
+}
+
 static void proxyCallback(const char* resp, size_t len) {
     static timeval timestamp;
     TickType_t     ticks = xTaskGetTickCount();
@@ -336,73 +360,73 @@ static void proxyCallback(const char* resp, size_t len) {
     }
 
     static size_t frame_count = 0;
-    static uint32_t s_last_cloud_frame_ms = 0;
     size_t img_key_len = 0;
     const char* slice = find_image_key(resp, len, &img_key_len);
-    bool has_image = (slice != NULL);
-    if (has_image) {
-        frame_count++;
-        g_total_frames = frame_count;
+    bool has_image_key = (slice != NULL);
+    bool is_invoke = (type & CMD_TYPE_INVOKE) != 0;
+    uint32_t now_ms = millis();
+
+    if (is_invoke || has_image_key) {
         g_last_frame_bytes = len;
-        g_last_frame_millis = millis();
+        g_last_frame_millis = now_ms;
+    }
 
-        // Rate-limit cloud streaming to ~10-12 FPS to prevent TLS TCP backpressure and SRAM exhaustion
-        bool send_to_cloud = false;
-        uint32_t now_ms = g_last_frame_millis;
-        if (cloudClient.isConnected() && (now_ms - s_last_cloud_frame_ms >= 85)) {
-            s_last_cloud_frame_ms = now_ms;
-            send_to_cloud = true;
-        }
+    bool send_to_cloud = false;
+    if ((is_invoke || has_image_key) && cloudClient.isConnected()) {
+        send_to_cloud = true;
+    }
 
-        // 1. Decode JPEG binary
-        if (slice != NULL) {
-            size_t offset = (slice - resp) + img_key_len;
-            const char* data = resp + offset;
-            const char* quote = strnstr(data, MSG_QUOTE_STR, len - offset);
-            if (quote != NULL) {
-                size_t img_len = quote - data;
-                if (img_len > 0) {
-                    static size_t s_latest_jpeg_cap = JPG_BUFFER_SIZE;
+    if (has_image_key && slice != NULL) {
+        size_t offset = (slice - resp) + img_key_len;
+        const char* data = resp + offset;
+        const char* quote = strnstr(data, MSG_QUOTE_STR, len - offset);
+        if (quote != NULL) {
+            size_t img_len = quote - data;
+            if (img_len > 0) {
+                static size_t s_latest_jpeg_cap = JPG_BUFFER_SIZE;
+                if (s_latest_jpeg_buf == NULL) {
+                    s_latest_jpeg_buf = (uint8_t*)heap_caps_malloc(JPG_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    s_latest_jpeg_cap = JPG_BUFFER_SIZE;
                     if (s_latest_jpeg_buf == NULL) {
-                        s_latest_jpeg_buf = (uint8_t*)heap_caps_malloc(JPG_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                        s_latest_jpeg_cap = JPG_BUFFER_SIZE;
-                        if (s_latest_jpeg_buf == NULL) {
-                            s_latest_jpeg_cap = 32768;
-                            s_latest_jpeg_buf = (uint8_t*)malloc(s_latest_jpeg_cap);
-                        }
+                        s_latest_jpeg_cap = 32768;
+                        s_latest_jpeg_buf = (uint8_t*)malloc(s_latest_jpeg_cap);
                     }
-                    if (s_latest_jpeg_buf != NULL) {
-                        size_t ws_jpeg_size = 0;
-                        if (mbedtls_base64_decode(
-                              s_latest_jpeg_buf, s_latest_jpeg_cap, &ws_jpeg_size, (const unsigned char*)data, img_len) == 0) {
-                            for (size_t i = 0; i + 1 < ws_jpeg_size; ++i) {
-                                if (s_latest_jpeg_buf[i] == 0xFF && s_latest_jpeg_buf[i + 1] == 0xD9) {
-                                    ws_jpeg_size = i + 2;
-                                    break;
-                                }
+                }
+                if (s_latest_jpeg_buf != NULL) {
+                    size_t ws_jpeg_size = 0;
+                    if (mbedtls_base64_decode(
+                          s_latest_jpeg_buf, s_latest_jpeg_cap, &ws_jpeg_size, (const unsigned char*)data, img_len) == 0) {
+                        for (size_t i = 0; i + 1 < ws_jpeg_size; ++i) {
+                            if (s_latest_jpeg_buf[i] == 0xFF && s_latest_jpeg_buf[i + 1] == 0xD9) {
+                                ws_jpeg_size = i + 2;
+                                break;
                             }
-                            s_latest_jpeg_len = ws_jpeg_size;
+                        }
+                        s_latest_jpeg_len = ws_jpeg_size;
+                        frame_count++;
+                        g_total_frames = frame_count;
 
-                            // Broadcast real-time binary to connected WebSockets
-                            if (webSocket.connectedClients() > 0) {
-                                webSocket.broadcastBIN((const uint8_t*)s_latest_jpeg_buf, ws_jpeg_size);
-                            }
-                            if (send_to_cloud) {
-                                cloudClient.sendBIN((const uint8_t*)s_latest_jpeg_buf, ws_jpeg_size);
-                            }
+                        if (webSocket.connectedClients() > 0) {
+                            webSocket.broadcastBIN((const uint8_t*)s_latest_jpeg_buf, ws_jpeg_size);
+                        }
+                        if (send_to_cloud) {
+                            cloudClient.sendBIN((const uint8_t*)s_latest_jpeg_buf, ws_jpeg_size);
                         }
                     }
                 }
             }
+            /* Empty "image":"" keeps boxes on this INVOKE. Do not replay
+             * the last JPEG: that froze the dashboard on a stale frame
+             * while FPS and boxes kept moving. */
         }
+    }
 
-        // 2. Parse bounding boxes & emotion detection (24/7 autonomous monitoring)
+    if (is_invoke || has_image_key) {
         const char* b = strnstr(resp, "\"boxes\":", len);
         bool sent_box = false;
         if (b != NULL) {
             const char* b_open = strchr(b, '[');
             if (b_open != NULL && b_open[1] == '[') {
-                // Multi-box parsing (up to 10 detected cats)
                 struct ParsedBox {
                     int x, y, w, h;
                     int score;
@@ -425,20 +449,26 @@ static void proxyCallback(const char* resp, size_t len) {
                         int by = cy - ch / 2;
                         if (bx < 0) bx = 0;
                         if (by < 0) by = 0;
-                        parsed_boxes[box_count].x = bx;
-                        parsed_boxes[box_count].y = by;
-                        parsed_boxes[box_count].w = cw;
-                        parsed_boxes[box_count].h = ch;
-                        parsed_boxes[box_count].score = score;
-                        parsed_boxes[box_count].target = target;
-                        box_count++;
+                        /* Preview is 256x192. Drop specks and near-full-frame blur. */
+                        if (cw >= 16 && ch >= 16 && cw <= 240 && ch <= 176) {
+                            int area = cw * ch;
+                            float ar = (float)cw / (float)ch;
+                            if (area <= (256 * 192 * 72 / 100) && ar >= 0.35f && ar <= 2.80f) {
+                                parsed_boxes[box_count].x = bx;
+                                parsed_boxes[box_count].y = by;
+                                parsed_boxes[box_count].w = cw;
+                                parsed_boxes[box_count].h = ch;
+                                parsed_boxes[box_count].score = score;
+                                parsed_boxes[box_count].target = target;
+                                box_count++;
+                            }
+                        }
                     }
                     p = strchr(p, ']');
                     if (p) p++;
                 }
 
                 if (box_count > 0) {
-                    // 1. Primary box selection (highest confidence overall for UI header / legacy fallback)
                     int best_idx = 0;
                     for (int i = 1; i < box_count; i++) {
                         if (parsed_boxes[i].score > parsed_boxes[best_idx].score) {
@@ -459,66 +489,92 @@ static void proxyCallback(const char* resp, size_t len) {
                     s_latest_bbox.confidence = best_score;
                     s_has_latest_bbox = true;
 
-                    // 2. Identify if ANY cat is in acute distress (Angry or Scared with score >= 55)
                     int distress_idx = -1;
                     for (int i = 0; i < box_count; i++) {
                         if ((parsed_boxes[i].target == EMOTION_ANGRY || parsed_boxes[i].target == EMOTION_SCARED) &&
-                            parsed_boxes[i].score >= 55) {
+                            parsed_boxes[i].score >= 70) {
                             if (distress_idx < 0 || parsed_boxes[i].score > parsed_boxes[distress_idx].score) {
                                 distress_idx = i;
                             }
                         }
                     }
 
-                    if (distress_idx >= 0) {
-                        // Pass the distressed cat to the stress detector
-                        s_latest_distress_bbox.x = parsed_boxes[distress_idx].x;
-                        s_latest_distress_bbox.y = parsed_boxes[distress_idx].y;
-                        s_latest_distress_bbox.w = parsed_boxes[distress_idx].w;
-                        s_latest_distress_bbox.h = parsed_boxes[distress_idx].h;
-                        s_latest_distress_bbox.target = parsed_boxes[distress_idx].target;
-                        s_latest_distress_bbox.confidence = parsed_boxes[distress_idx].score / 100.0f;
+                    int stress_idx = (distress_idx >= 0) ? distress_idx : best_idx;
+                    int id_x = 0, id_y = 0, id_w = 0, id_h = 0;
+                    if (getBoutIdentity(&id_x, &id_y, &id_w, &id_h)) {
+                        float best_iou = 0.0f;
+                        int match_idx = -1;
+                        for (int i = 0; i < box_count; i++) {
+                            float iou = bboxIou(id_x, id_y, id_w, id_h,
+                                                parsed_boxes[i].x, parsed_boxes[i].y,
+                                                parsed_boxes[i].w, parsed_boxes[i].h);
+                            if (iou > best_iou) {
+                                best_iou = iou;
+                                match_idx = i;
+                            }
+                        }
+                        if (match_idx >= 0 && best_iou >= BOUT_IDENTITY_IOU_MIN) {
+                            stress_idx = match_idx;
+                        } else if (distress_idx >= 0) {
+                            stress_idx = distress_idx;
+                        }
+                    }
+
+                    bool stress_is_distress =
+                        (parsed_boxes[stress_idx].target == EMOTION_ANGRY ||
+                         parsed_boxes[stress_idx].target == EMOTION_SCARED) &&
+                        parsed_boxes[stress_idx].score >= 70;
+
+                    if (stress_is_distress) {
+                        s_latest_distress_bbox.x = parsed_boxes[stress_idx].x;
+                        s_latest_distress_bbox.y = parsed_boxes[stress_idx].y;
+                        s_latest_distress_bbox.w = parsed_boxes[stress_idx].w;
+                        s_latest_distress_bbox.h = parsed_boxes[stress_idx].h;
+                        s_latest_distress_bbox.target = parsed_boxes[stress_idx].target;
+                        s_latest_distress_bbox.confidence = parsed_boxes[stress_idx].score / 100.0f;
                         s_has_latest_distress_bbox = true;
 
-                        // 100% AUTHENTICITY GUARANTEE:
-                        // Cache this exact distressed frame into dedicated PSRAM snapshot buffer.
-                        // Even if the camera subsequently points away to a focus/relax cat before the alert triggers,
-                        // this buffer preserves the genuine image and bbox of the distressed cat!
-                        if (s_distress_snapshot_buf == NULL) {
-                            s_distress_snapshot_cap = JPG_BUFFER_SIZE;
-                            s_distress_snapshot_buf = (uint8_t*)heap_caps_malloc(s_distress_snapshot_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                            if (!s_distress_snapshot_buf) {
-                                s_distress_snapshot_cap = 32768;
-                                s_distress_snapshot_buf = (uint8_t*)malloc(s_distress_snapshot_cap);
+                        if (!isAlertNoopActive()) {
+                            if (s_distress_snapshot_buf == NULL) {
+                                s_distress_snapshot_cap = JPG_BUFFER_SIZE;
+                                s_distress_snapshot_buf = (uint8_t*)heap_caps_malloc(s_distress_snapshot_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                if (!s_distress_snapshot_buf) {
+                                    s_distress_snapshot_cap = 32768;
+                                    s_distress_snapshot_buf = (uint8_t*)malloc(s_distress_snapshot_cap);
+                                }
+                            }
+
+                            bool should_update_snapshot = false;
+                            if (!s_has_distress_snapshot) {
+                                should_update_snapshot = true;
+                            } else if (parsed_boxes[stress_idx].score >= (int)(s_distress_snapshot_bbox.confidence * 100.0f)) {
+                                should_update_snapshot = true;
+                            } else if (now_ms - s_distress_snapshot_time > 2000) {
+                                should_update_snapshot = true;
+                            }
+
+                            if (should_update_snapshot && s_distress_snapshot_buf != NULL && s_latest_jpeg_buf != NULL && s_latest_jpeg_len > 0 && s_latest_jpeg_len <= s_distress_snapshot_cap) {
+                                memcpy(s_distress_snapshot_buf, s_latest_jpeg_buf, s_latest_jpeg_len);
+                                s_distress_snapshot_len = s_latest_jpeg_len;
+                                s_distress_snapshot_bbox = s_latest_distress_bbox;
+                                s_has_distress_snapshot = true;
+                                s_distress_snapshot_time = now_ms;
                             }
                         }
 
-                        uint32_t now_ms = millis();
-                        bool should_update_snapshot = false;
-                        if (!s_has_distress_snapshot) {
-                            should_update_snapshot = true;
-                        } else if (parsed_boxes[distress_idx].score >= (int)(s_distress_snapshot_bbox.confidence * 100.0f)) {
-                            should_update_snapshot = true;
-                        } else if (now_ms - s_distress_snapshot_time > 2000) {
-                            should_update_snapshot = true;
-                        }
-
-                        if (should_update_snapshot && s_distress_snapshot_buf != NULL && s_latest_jpeg_buf != NULL && s_latest_jpeg_len > 0 && s_latest_jpeg_len <= s_distress_snapshot_cap) {
-                            memcpy(s_distress_snapshot_buf, s_latest_jpeg_buf, s_latest_jpeg_len);
-                            s_distress_snapshot_len = s_latest_jpeg_len;
-                            s_distress_snapshot_bbox = s_latest_distress_bbox;
-                            s_has_distress_snapshot = true;
-                            s_distress_snapshot_time = now_ms;
-                        }
-
-                        updateStressSample(parsed_boxes[distress_idx].target, parsed_boxes[distress_idx].score / 100.0f);
+                        updateStressSample(parsed_boxes[stress_idx].target,
+                                           parsed_boxes[stress_idx].score / 100.0f,
+                                           parsed_boxes[stress_idx].x, parsed_boxes[stress_idx].y,
+                                           parsed_boxes[stress_idx].w, parsed_boxes[stress_idx].h, true);
                     } else {
-                        // All detected cats in current frame are calm (Relax or Focus)
                         s_has_latest_distress_bbox = false;
                         if (!isDistressBoutActive()) {
                             s_has_distress_snapshot = false;
                         }
-                        updateStressSample(best_target, best_score);
+                        updateStressSample(parsed_boxes[stress_idx].target,
+                                           parsed_boxes[stress_idx].score / 100.0f,
+                                           parsed_boxes[stress_idx].x, parsed_boxes[stress_idx].y,
+                                           parsed_boxes[stress_idx].w, parsed_boxes[stress_idx].h, true);
                     }
 
                     char raw_boxes[512];
@@ -570,7 +626,6 @@ static void proxyCallback(const char* resp, size_t len) {
         }
     }
 
-    log_i("Received %u bytes...", len);
 }
 
 static uint32_t s_last_diag_ms = 0;

@@ -26,10 +26,16 @@ struct StressReport {
     bool  is_alert_triggered;         // True if threshold met and cooldown expired
 };
 
+// Spatial identity: IoU below this starts a new bout instead of concatenating cats.
+static const float BOUT_IDENTITY_IOU_MIN = 0.30f;
+
 void initStressDetector();
-void updateStressSample(int emotion_class, float confidence);
+void updateStressSample(int emotion_class, float confidence, int box_x = 0, int box_y = 0,
+                        int box_w = 0, int box_h = 0, bool has_bbox = false);
 bool evaluateStressAnomaly(StressReport* report);
 bool isDistressBoutActive();
+bool getBoutIdentity(int* x, int* y, int* w, int* h);
+bool isAlertNoopActive();
 float getCurrentStressScore();
 int getEstimatedCSSLevel();
 float getConsecutiveDistressSec();

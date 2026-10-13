@@ -153,8 +153,9 @@ The firmware implements an advanced **Temporal Feline Stress Index (TFSI)** grou
    - *Model Application*: Supports edge temporal aggregation of spatial bounding boxes over isolated single-frame classifications.
 
 5. **Environmental Stressors & Autonomic Dynamics**:
-   - *Citation*: Stella, J., Croney, C., & Buffington, T. (2013). Effects of stressors on the behavior and physiology of domestic cats. *Journal of Feline Medicine and Surgery*, 15(7), 578-586.
-   - *DOI*: [10.1177/1098612X13489215](https://journals.sagepub.com/doi/10.1177/1098612X13489215)
+   - *Citation*: Stella, J., Croney, C., & Buffington, T. (2013). Effects of stressors on the behavior and physiology of domestic cats. *Applied Animal Behaviour Science*, 143(2-4), 157-163.
+   - *DOI*: [10.1016/j.applanim.2012.10.014](https://doi.org/10.1016/j.applanim.2012.10.014)
+   - *PubMed Central*: [PMC4157662](https://pmc.ncbi.nlm.nih.gov/articles/PMC4157662/)
    - *Model Application*: Governs acute surge dynamics where high-certainty distress escalates sympathetic arousal faster than gradual baseline shifts.
 
 6. **Acoustic & Agonistic Posture Escalation**:

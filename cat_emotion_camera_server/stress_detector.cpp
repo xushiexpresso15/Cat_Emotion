@@ -7,7 +7,8 @@
 //    (Felis silvestris catus) housed singly, in pairs and in groups in boarding
 //    catteries. Animal Welfare, 6(3), 243-254.
 // 2. Stella, J., Croney, C., & Buffington, T. (2013). Effects of stressors on
-//    the behavior and physiology of domestic cats. J Feline Med Surg, 15(7), 578-586.
+//    the behavior and physiology of domestic cats. Applied Animal Behaviour Science,
+//    143(2-4), 157-163. DOI: 10.1016/j.applanim.2012.10.014 (PMC4157662).
 // 3. Evangelista, M. C., et al. (2019). Facial expressions of pain in cats:
 //    the development and validation of Feline Grimace Scale. Nature Scientific Reports, 9, 19128.
 // 4. Martin, P., & Bateson, P. (2007). Measuring Behaviour: An Introductory Guide.
@@ -27,13 +28,17 @@ static const float WEIGHT_ANGRY  = 1.00f; // CSS 6-7
 //    (Martin & Bateson 2007: Momentary sensor dropout or frame flicker <=2.0s does not break an ongoing bout,
 //     but calm / non-distress persisting >=2.0s officially terminates the bout and resets the duration).
 // 3. ALERT_COOLDOWN_MS: 45.0 seconds refractory period between Discord webhook alerts.
+// 4. HARDWARE_RESET_NOOP_MS: settle window after a fired alert, matched to the D3
+//    hard-reset path (50 ms pulse + 1500 ms wait). Different cats with IoU < 0.30
+//    start a new bout instead of concatenating duration.
 static const uint32_t DISTRESS_TIME_THRESHOLD_MS = 6000;
 static const uint32_t BOUT_GAP_TOLERANCE_MS      = 2000;
 static const uint32_t ALERT_COOLDOWN_MS          = 45000;
+static const uint32_t HARDWARE_RESET_NOOP_MS     = 1550;
 
 // Instantaneous confidence threshold for high-distress classification
-// Raised to 0.55 to avoid false bouts triggered by ambiguous / low-confidence detections
-static const float DISTRESS_CONFIDENCE_THRESHOLD = 0.55f;
+// 0.70: live WIoU INT8 labeled a human face as scared at 74% for 6 s.
+static const float DISTRESS_CONFIDENCE_THRESHOLD = 0.70f;
 
 // Continuous state tracking
 static float    s_smoothed_stress = 0.0f;
@@ -48,6 +53,11 @@ static bool     s_alert_sent_for_current_bout = false;
 
 // Alert & Cooldown
 static uint32_t s_last_alert_time = 0;
+static uint32_t s_noop_until_ms = 0;
+
+// Spatial identity of the cat that owns the current bout (no BYTETracker on UART path)
+static bool s_identity_valid = false;
+static int  s_id_x = 0, s_id_y = 0, s_id_w = 0, s_id_h = 0;
 
 // Ethological voting counters for the active bout (prevents irreversible latching to Angry)
 static uint32_t s_bout_total_samples = 0;
@@ -68,6 +78,52 @@ static void resetBoutCounters() {
     s_scared_conf_sum = 0.0f;
 }
 
+static float boxIou(int ax, int ay, int aw, int ah, int bx, int by, int bw, int bh) {
+    int ax2 = ax + aw;
+    int ay2 = ay + ah;
+    int bx2 = bx + bw;
+    int by2 = by + bh;
+    int x1 = ax > bx ? ax : bx;
+    int y1 = ay > by ? ay : by;
+    int x2 = ax2 < bx2 ? ax2 : bx2;
+    int y2 = ay2 < by2 ? ay2 : by2;
+    int iw = x2 - x1;
+    int ih = y2 - y1;
+    if (iw <= 0 || ih <= 0) {
+        return 0.0f;
+    }
+    float inter = (float)iw * (float)ih;
+    float uni = (float)aw * (float)ah + (float)bw * (float)bh - inter;
+    if (uni <= 0.0f) {
+        return 0.0f;
+    }
+    return inter / uni;
+}
+
+static void clearBoutIdentity() {
+    s_identity_valid = false;
+    s_id_x = 0;
+    s_id_y = 0;
+    s_id_w = 0;
+    s_id_h = 0;
+}
+
+static void setBoutIdentity(int x, int y, int w, int h) {
+    s_identity_valid = true;
+    s_id_x = x;
+    s_id_y = y;
+    s_id_w = w;
+    s_id_h = h;
+}
+
+static void endBout() {
+    s_bout_active = false;
+    s_bout_start_time_ms = 0;
+    s_alert_sent_for_current_bout = false;
+    clearBoutIdentity();
+    resetBoutCounters();
+}
+
 void initStressDetector() {
     s_smoothed_stress = 0.0f;
     s_latest_raw_score = 0.0f;
@@ -77,8 +133,10 @@ void initStressDetector() {
     s_last_distress_frame_ms = 0;
     s_alert_sent_for_current_bout = false;
     s_last_alert_time = 0;
+    s_noop_until_ms = 0;
+    clearBoutIdentity();
     resetBoutCounters();
-    Serial.println("[Stress Detector] Initialized Robust Multi-Cat Ethological Engine");
+    Serial.println("[Stress Detector] Initialized IoU-identity bout engine (noop 1550 ms)");
 }
 
 int calculateCSSLevel(float score) {
@@ -118,7 +176,8 @@ int getEstimatedCSSLevel() {
     return calculateCSSLevel(s_smoothed_stress);
 }
 
-void updateStressSample(int emotion_class, float confidence) {
+void updateStressSample(int emotion_class, float confidence, int box_x, int box_y,
+                        int box_w, int box_h, bool has_bbox) {
     uint32_t now = millis();
     uint32_t elapsed_ms = (s_last_sample_time > 0 && now >= s_last_sample_time) ? (now - s_last_sample_time) : 100;
     s_last_sample_time = now;
@@ -144,22 +203,43 @@ void updateStressSample(int emotion_class, float confidence) {
     float alpha = dt / (1.2f + dt);
     s_smoothed_stress = (1.0f - alpha) * s_smoothed_stress + alpha * sample_score;
 
-    // Check if current frame represents acute distress
+    if (s_noop_until_ms != 0 && now < s_noop_until_ms) {
+        return;
+    }
+    s_noop_until_ms = 0;
+
     bool is_distress = (emotion_class == EMOTION_ANGRY || emotion_class == EMOTION_SCARED) &&
                        (confidence >= DISTRESS_CONFIDENCE_THRESHOLD);
+
+    if (s_bout_active && has_bbox && s_identity_valid) {
+        float iou = boxIou(s_id_x, s_id_y, s_id_w, s_id_h, box_x, box_y, box_w, box_h);
+        if (iou < BOUT_IDENTITY_IOU_MIN) {
+            uint32_t total_bout_sec = (s_last_distress_frame_ms > s_bout_start_time_ms) ?
+                ((s_last_distress_frame_ms - s_bout_start_time_ms) / 1000) : 0;
+            Serial.printf("[Stress Detector] Identity split (IoU %.2f). Ending %lu s bout.\n",
+                iou, (unsigned long)total_bout_sec);
+            endBout();
+        } else {
+            setBoutIdentity(box_x, box_y, box_w, box_h);
+        }
+    }
 
     if (is_distress) {
         s_last_distress_frame_ms = now;
         if (!s_bout_active) {
-            // New bout onset
             s_bout_active = true;
             s_bout_start_time_ms = now;
             s_alert_sent_for_current_bout = false;
             resetBoutCounters();
+            if (has_bbox) {
+                setBoutIdentity(box_x, box_y, box_w, box_h);
+            } else {
+                clearBoutIdentity();
+            }
             Serial.printf("[Stress Detector] Distress bout onset (First emotion: %s, Conf: %.0f%%)\n",
                 getEmotionName(emotion_class), confidence * 100.0f);
         }
-        
+
         s_bout_total_samples++;
         s_distress_sample_count++;
         if (emotion_class == EMOTION_ANGRY) {
@@ -174,7 +254,6 @@ void updateStressSample(int emotion_class, float confidence) {
             s_bout_total_samples++;
             s_calm_count++;
 
-            // Evaluate if bout has timed out via 2.0s gap tolerance OR has been overwhelmed by calm frames
             bool gap_exceeded = (now - s_last_distress_frame_ms >= BOUT_GAP_TOLERANCE_MS);
             bool calm_dominated = (s_calm_count >= 8 && ((float)s_distress_sample_count / (float)s_bout_total_samples < 0.35f));
 
@@ -183,10 +262,7 @@ void updateStressSample(int emotion_class, float confidence) {
                     ((s_last_distress_frame_ms - s_bout_start_time_ms) / 1000) : 0;
                 Serial.printf("[Stress Detector] Distress bout terminated after %lu s (Cat calm / distress density low). Resetting.\n",
                     (unsigned long)total_bout_sec);
-                s_bout_active = false;
-                s_bout_start_time_ms = 0;
-                s_alert_sent_for_current_bout = false;
-                resetBoutCounters();
+                endBout();
             }
         }
     }
@@ -196,12 +272,8 @@ bool evaluateStressAnomaly(StressReport* report) {
     uint32_t now = millis();
     bool trigger = false;
 
-    // Timeout check
     if (s_bout_active && (now - s_last_distress_frame_ms >= BOUT_GAP_TOLERANCE_MS)) {
-        s_bout_active = false;
-        s_bout_start_time_ms = 0;
-        s_alert_sent_for_current_bout = false;
-        resetBoutCounters();
+        endBout();
     }
 
     float current_duration_sec = 0.0f;
@@ -212,15 +284,9 @@ bool evaluateStressAnomaly(StressReport* report) {
         uint32_t duration_ms = (now >= s_bout_start_time_ms) ? (now - s_bout_start_time_ms) : 0;
         current_duration_sec = (float)duration_ms / 1000.0f;
 
-        float distress_density = (s_bout_total_samples > 0) ? 
+        float distress_density = (s_bout_total_samples > 0) ?
             ((float)s_distress_sample_count / (float)s_bout_total_samples) : 0.0f;
 
-        // Trigger condition (Stella et al. 2013; Kessler & Turner 1997):
-        // 1. Bout duration >= 6.0 seconds
-        // 2. Distress density >= 50% (at least half the observed frames are acute distress)
-        // 3. Distress sample count >= 10 frames (filters transient sensor dropouts)
-        // 4. Exactly one alert dispatched per continuous distress bout
-        // 5. Cooldown has elapsed since last Discord notification (45s)
         if (duration_ms >= DISTRESS_TIME_THRESHOLD_MS &&
             distress_density >= 0.50f &&
             s_distress_sample_count >= 10 &&
@@ -234,7 +300,6 @@ bool evaluateStressAnomaly(StressReport* report) {
             }
         }
 
-        // Calculate average confidence for the dominant emotion
         if (dominant_emotion == EMOTION_ANGRY && s_angry_count > 0) {
             avg_conf = s_angry_conf_sum / (float)s_angry_count;
         } else if (dominant_emotion == EMOTION_SCARED && s_scared_count > 0) {
@@ -252,6 +317,13 @@ bool evaluateStressAnomaly(StressReport* report) {
         report->avg_confidence = avg_conf;
         report->css_level = getEstimatedCSSLevel();
         report->is_alert_triggered = trigger;
+    }
+
+    if (trigger) {
+        s_noop_until_ms = now + HARDWARE_RESET_NOOP_MS;
+        Serial.printf("[Stress Detector] Bout closed after alert; no-op %u ms\n",
+            (unsigned)HARDWARE_RESET_NOOP_MS);
+        endBout();
     }
 
     return trigger;
@@ -302,6 +374,22 @@ bool isDistressBoutActive() {
     if (!s_bout_active) return false;
     uint32_t now = millis();
     return (now - s_last_distress_frame_ms < BOUT_GAP_TOLERANCE_MS);
+}
+
+bool getBoutIdentity(int* x, int* y, int* w, int* h) {
+    if (!s_bout_active || !s_identity_valid) {
+        return false;
+    }
+    if (x) *x = s_id_x;
+    if (y) *y = s_id_y;
+    if (w) *w = s_id_w;
+    if (h) *h = s_id_h;
+    return true;
+}
+
+bool isAlertNoopActive() {
+    uint32_t now = millis();
+    return (s_noop_until_ms != 0 && now < s_noop_until_ms);
 }
 
 void resetAlertCooldown() {
